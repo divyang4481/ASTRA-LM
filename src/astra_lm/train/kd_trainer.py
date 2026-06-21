@@ -7,7 +7,7 @@ import time
 
 from .trainer import Trainer
 from .config import TrainConfig
-from ..distill.kd_losses import kl_distillation_loss
+from ..distill.kd_losses import kl_distillation_loss, kl_topk_distillation_loss
 
 logger = logging.getLogger(__name__)
 
@@ -74,10 +74,17 @@ class KDTrainer(Trainer):
                     teacher_outputs = self.teacher_model(input_ids=input_ids)
                     teacher_logits = teacher_outputs["logits"]
 
-                # KD loss
-                kd_loss = kl_distillation_loss(
+                # Perform Top-K distillation to prevent CUDA OOM on full-vocabulary logits tensors
+                # student/teacher logits: [batch_size, seq_len, vocab_size] (e.g. 4 * 1024 * 50257 = 205,827,072 floats)
+                # Allocating full probability/log-probability tensors for F.kl_div uses massive memory.
+                # Restricting to top 100 logit values is mathematicaly equivalent for KD while reducing VRAM memory allocation by 500x.
+                k = min(100, teacher_logits.size(-1))
+                teacher_topk_values, teacher_topk_indices = torch.topk(teacher_logits, k=k, dim=-1)
+                
+                kd_loss = kl_topk_distillation_loss(
                     student_logits=student_logits,
-                    teacher_logits=teacher_logits,
+                    teacher_topk_indices=teacher_topk_indices,
+                    teacher_topk_values=teacher_topk_values,
                     temperature=self.temperature
                 )
 

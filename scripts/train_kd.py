@@ -24,6 +24,7 @@ def main():
     parser.add_argument("--output_dir", type=str, help="Override output directory")
     parser.add_argument("--data_dir", type=str, help="Path to directory with train.npy and val.npy")
     parser.add_argument("--allow_random_teacher", action="store_true", help="Allow random teacher if checkpoint missing")
+    parser.add_argument("--teacher_dtype", type=str, default="bf16", choices=["fp32", "fp16", "bf16", "8bit", "4bit"], help="Data type or quantization for loading HF teacher model")
     
     args = parser.parse_args()
 
@@ -55,12 +56,26 @@ def main():
     if not args.teacher_checkpoint and not args.allow_random_teacher:
         raise ValueError("Serious KD training requires --teacher_checkpoint. Use --allow_random_teacher for debugging only.")
 
-    logger.info(f"Loading teacher model from {args.teacher_config}...")
+    logger.info(f"Loading teacher model from {args.teacher_config} in dtype/quant: {args.teacher_dtype}...")
     teacher_model = load_teacher_model(
         config_path=args.teacher_config,
         checkpoint_path=args.teacher_checkpoint,
-        device=device
+        device=device,
+        dtype=args.teacher_dtype
     )
+
+    # Determine max sequence length for KD
+    teacher_seq_len = 1024
+    if hasattr(teacher_model, "config"):
+        if hasattr(teacher_model.config, "n_positions"):
+            teacher_seq_len = teacher_model.config.n_positions
+        elif hasattr(teacher_model.config, "max_position_embeddings"):
+            teacher_seq_len = teacher_model.config.max_position_embeddings
+        elif hasattr(teacher_model.config, "max_seq_len"):
+            teacher_seq_len = teacher_model.config.max_seq_len
+
+    max_kd_seq_len = min(s_m_cfg.max_seq_len, teacher_seq_len)
+    logger.info(f"Setting KD sequence length to {max_kd_seq_len} (Student: {s_m_cfg.max_seq_len}, Teacher: {teacher_seq_len})")
 
     # Initialize dataset
     if args.data_dir:
@@ -75,18 +90,18 @@ def main():
         if not os.path.exists(val_path):
             raise FileNotFoundError(f"Validation data not found. Expected val.npy or validation.npy.")
 
-        train_dataset = PretokenizedDataset(train_path, seq_len=s_m_cfg.max_seq_len)
-        eval_dataset = PretokenizedDataset(val_path, seq_len=s_m_cfg.max_seq_len)
+        train_dataset = PretokenizedDataset(train_path, seq_len=max_kd_seq_len)
+        eval_dataset = PretokenizedDataset(val_path, seq_len=max_kd_seq_len)
     else:
         logger.info("Initializing synthetic dataset...")
         train_dataset = SyntheticDataset(
             vocab_size=s_m_cfg.vocab_size,
-            seq_len=s_m_cfg.max_seq_len,
+            seq_len=max_kd_seq_len,
             num_samples=1000
         )
         eval_dataset = SyntheticDataset(
             vocab_size=s_m_cfg.vocab_size,
-            seq_len=s_m_cfg.max_seq_len,
+            seq_len=max_kd_seq_len,
             num_samples=100
         )
 

@@ -24,15 +24,23 @@ class SuryaMixer(nn.Module):
         batch, seq_len, d_model = x.shape
         v = self.w_v(x)
         
+        # Save original dtype and cast to float32 if needed, as FFT doesn't support float16/bfloat16
+        dtype = v.dtype
+        if dtype in (torch.float16, torch.bfloat16):
+            v_32 = v.to(torch.float32)
+        else:
+            v_32 = v
+            
         # 1D FFT along the sequence dimension
-        v_fft = torch.fft.fft(v, dim=1)
+        v_fft = torch.fft.fft(v_32, dim=1)
         
         # Slice filter weights to the current sequence length and multiply
-        w = self.filter_weight[:seq_len, :].unsqueeze(0) # [1, seq_len, d_model]
+        w = self.filter_weight[:seq_len, :].unsqueeze(0).to(v_fft.dtype) # [1, seq_len, d_model]
         out_fft = v_fft * w
         
         # Inverse FFT
-        out = torch.fft.ifft(out_fft, dim=1).real
+        out_32 = torch.fft.ifft(out_fft, dim=1).real
+        out = out_32.to(dtype)
         
         # Output projection
         return self.w_o(out)

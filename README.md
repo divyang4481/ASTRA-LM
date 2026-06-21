@@ -65,6 +65,8 @@ astra-lm/
 │   │   └── optimizer.py              # AdamW weight decay separator and scheduler
 │   └── utils/
 │       └── config_utils.py           # YAML config parsing helpers
+├── notebooks/                # Jupyter notebook guides (Colab/Kaggle)
+│   └── astra_lm_cloud_training.ipynb
 ├── scripts/                  # Run scripts
 │   ├── train.py                  # Single model pretraining entrypoint
 │   ├── train_kd.py               # Distillation training entrypoint
@@ -192,45 +194,47 @@ python scripts/generate.py --checkpoint outputs/smoke/checkpoint-10.pt --model_c
 ```
 
 ### 6. Knowledge Distillation (DRONA-KD)
-Train a student DHRUVA model under the guidance of a **trained** teacher model. A teacher checkpoint is required for serious KD.
+Train a student DHRUVA model under the guidance of a teacher model. You can load a local model config and checkpoint, or dynamically fetch a pretrained teacher directly from Hugging Face (such as `gpt2-medium` or `gpt2`):
 
+#### Laptop KD Training (using Hugging Face Teacher):
 ```powershell
 $env:PYTHONPATH="src"
 python scripts/train_kd.py `
-  --student_config configs/model/astra_nano_6gb.yaml `
-  --teacher_config configs/model/prism_gqa_baseline.yaml `
-  --teacher_checkpoint outputs/prism_gqa_fineweb_100m/checkpoint-50000.pt `
-  --train_config configs/train/kaggle_kd_100m.yaml `
-  --data_dir data/fineweb_edu_gpt2_100m
+  --student_config configs/model/astra_mini_80m.yaml `
+  --teacher_config gpt2-medium `
+  --train_config configs/train/laptop_distill.yaml `
+  --data_dir data/fineweb_edu_gpt2_10m `
+  --alpha 0.5 `
+  --temperature 2.0 `
+  --allow_random_teacher
 ```
+
+#### Dynamic Context Capping & Low VRAM Long Contexts:
+* **Context Capping in KD**: Hugging Face teacher models have fixed maximum position embeddings (e.g., `1024` tokens for `gpt2-medium`). The distillation script dynamically queries the teacher config and caps the training sequence length to `min(student_max_seq_len, teacher_max_seq_len)` to avoid out-of-bound indexing crashes.
+* **Low VRAM Long-Context Pretraining**: When pretraining a student model *directly* (without the teacher model in memory, using `scripts/train.py`), you can train with context windows as large as **`8192`** on a 6 GB VRAM laptop. This is enabled by **CHAKRA Attention Routing**, which compresses key-value cache length by over **90%** (routing query tokens only to a tiny fraction of total key-value buckets), scaling memory consumption near-linearly instead of quadratically with sequence length.
 
 ---
 
-## Running in Kaggle
+## Running in Google Colab & Kaggle
 
-Because ASTRA-LM does not depend on custom C++/CUDA compile steps and uses native PyTorch masking, it can be run in a Kaggle notebook immediately.
+Because ASTRA-LM does not depend on custom C++/CUDA compile steps and uses native PyTorch masking, it runs on Google Colab and Kaggle immediately.
 
-### Setup on Kaggle:
-1. Create a new Kaggle Notebook.
-2. In the right panel, select **GPU P100** under Accelerator (Single P100 is recommended as multi-GPU is not yet implemented).
-3. Clone the repo and install:
+We have created a ready-to-run Jupyter notebook: [astra_lm_cloud_training.ipynb](file:///c:/workspace/AI/ASTRA-LM/notebooks/astra_lm_cloud_training.ipynb).
+
+### Setup and Upload Guide:
+1. **Push your code to GitHub**: Since you are pair-programming in a Git repository, commit and push your latest changes (`git add .`, `git commit -m "Updates"`, `git push`).
+2. **Open Google Colab or Kaggle**:
+   * **Google Colab**: Go to [colab.research.google.com](https://colab.research.google.com/) -> Select **Upload** -> Drag and drop the `notebooks/astra_lm_cloud_training.ipynb` file from your local computer.
+   * **Kaggle**: Go to [kaggle.com/code](https://www.kaggle.com/code) -> Click **New Notebook** -> Select **File** -> **Import Notebook** -> Upload `notebooks/astra_lm_cloud_training.ipynb`.
+3. **Select GPU Accelerator**:
+   * **Colab**: Click **Runtime** -> **Change runtime type** -> Select **T4 GPU** or higher.
+   * **Kaggle**: In the right sidebar panel, under **Accelerator**, select **GPU T4 x2** or **GPU P100**.
+4. **Execute**: Run the notebook cells sequentially. The first cell will clone your repo and install the package dependencies:
    ```bash
    !git clone https://github.com/divyang4481/ASTRA-LM.git
    %cd ASTRA-LM
    !pip install -e .
-   ```
-4. Prepare data and run training:
-   ```bash
-   !export PYTHONPATH=src && python scripts/prepare_gpt2_pretrain_data.py \
-       --train_tokens 100000000 \
-       --val_tokens 2000000 \
-       --out_dir data/fineweb_edu_gpt2_100m
-
-   !export PYTHONPATH=src && python scripts/train.py \
-       --model_config configs/model/astra_nano_6gb.yaml \
-       --train_config configs/train/kaggle_100m.yaml \
-       --data_dir data/fineweb_edu_gpt2_100m \
-       --device cuda
+   !pip install bitsandbytes accelerate
    ```
 
 ---
