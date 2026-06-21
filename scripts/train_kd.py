@@ -27,6 +27,7 @@ def main():
     parser.add_argument("--teacher_dtype", type=str, default="bf16", choices=["fp32", "fp16", "bf16", "8bit", "4bit"], help="Data type or quantization for loading HF teacher model")
     parser.add_argument("--batch_size", type=int, help="Override per_device_train_batch_size")
     parser.add_argument("--seq_len", type=int, help="Override max_seq_len for KD")
+    parser.add_argument("--grad_accum", type=int, help="Override gradient_accumulation_steps")
     
     args = parser.parse_args()
 
@@ -53,6 +54,9 @@ def main():
     if args.batch_size:
         t_cfg.per_device_train_batch_size = args.batch_size
         t_cfg.per_device_eval_batch_size = args.batch_size
+
+    if args.grad_accum:
+        t_cfg.gradient_accumulation_steps = args.grad_accum
 
     # Initialize student model
     logger.info("Initializing student model...")

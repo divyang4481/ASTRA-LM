@@ -88,8 +88,25 @@ class KDTrainer(Trainer):
             # Forward pass with AMP
             try:
                 with torch.autocast(device_type=self.device.type, dtype=self.autocast_dtype, enabled=self.use_amp):
+                    # 1. Teacher forward (no grad) - run first to keep its temporary activation memory 
+                    # and large logits tensor out of the student's forward pass activation peak.
+                    with torch.no_grad():
+                        if step == 1: log_cuda_memory("Before teacher forward")
+                        teacher_outputs = self.teacher_model(input_ids=input_ids)
+                        teacher_logits = teacher_outputs["logits"]
+                        
+                        # Restricting to top 100 logit values is mathematically equivalent for KD
+                        # while reducing VRAM memory allocation by 500x.
+                        k = min(100, teacher_logits.size(-1))
+                        teacher_topk_values, teacher_topk_indices = torch.topk(teacher_logits, k=k, dim=-1)
+                        
+                        # Proactively delete the massive full-vocabulary logits tensor to free VRAM
+                        del teacher_logits
+                        del teacher_outputs
+                        if step == 1: log_cuda_memory("After teacher forward")
+
+                    # 2. Student forward
                     if step == 1: log_cuda_memory("Before student forward")
-                    # Student forward
                     student_outputs = self.model(
                         input_ids=input_ids,
                         labels=labels,
@@ -98,20 +115,6 @@ class KDTrainer(Trainer):
                     student_logits = student_outputs["logits"]
                     ce_loss = student_outputs["loss"]
                     if step == 1: log_cuda_memory("After student forward")
-
-                    # Teacher forward (no grad)
-                    with torch.no_grad():
-                        if step == 1: log_cuda_memory("Before teacher forward")
-                        teacher_outputs = self.teacher_model(input_ids=input_ids)
-                        teacher_logits = teacher_outputs["logits"]
-                        if step == 1: log_cuda_memory("After teacher forward")
-
-                    # Perform Top-K distillation to prevent CUDA OOM on full-vocabulary logits tensors
-                    # student/teacher logits: [batch_size, seq_len, vocab_size] (e.g. 4 * 1024 * 50257 = 205,827,072 floats)
-                    # Allocating full probability/log-probability tensors for F.kl_div uses massive memory.
-                    # Restricting to top 100 logit values is mathematicaly equivalent for KD while reducing VRAM memory allocation by 500x.
-                    k = min(100, teacher_logits.size(-1))
-                    teacher_topk_values, teacher_topk_indices = torch.topk(teacher_logits, k=k, dim=-1)
 
                     kd_loss = kl_topk_distillation_loss(
                         student_logits=student_logits,
