@@ -57,7 +57,7 @@ def test_chakra_shapes(tiny_config):
     x = torch.randn(2, 10, tiny_config.d_model)
     rope = RotaryEmbedding(tiny_config.head_dim, tiny_config.max_seq_len)
     cos, sin = rope(10)
-    out, q, k, v, diags = chakra(x, cos, sin)
+    out, q, k, v, diags = chakra(x, cos, sin, return_diagnostics=True)
     assert out.shape == (2, tiny_config.n_heads, 10, tiny_config.head_dim)
     assert q.shape == (2, tiny_config.n_heads, 10, tiny_config.head_dim)
     assert k.shape == (2, tiny_config.n_kv_heads, 10, tiny_config.head_dim)

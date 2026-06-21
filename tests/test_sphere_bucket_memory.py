@@ -23,7 +23,7 @@ def test_memory_efficient_bucketing():
     # The OOM in user report: "Tried to allocate 768.00 MiB" matches 8*12*1024*1024 * 8 bytes (int64).
 
     print("Running bucketer...")
-    mask, diagnostics = bucketer(q, k, local_window, nearby_buckets)
+    mask, diagnostics = bucketer(q, k, local_window, nearby_buckets, return_diagnostics=True)
     print(f"Mask shape: {mask.shape}, Candidate ratio: {diagnostics['candidate_ratio']:.2%}")
 
     assert mask.shape == (batch_size, n_heads, seq_len, seq_len)

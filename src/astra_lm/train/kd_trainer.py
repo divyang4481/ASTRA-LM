@@ -35,7 +35,20 @@ class KDTrainer(Trainer):
             device=device
         )
         log_cuda_memory("Before teacher model to device")
-        self.teacher_model = teacher_model.to(self.device).eval()
+        # Quantized models (8-bit or 4-bit) loaded with device_map do not support `.to()`
+        is_quantized = False
+        if hasattr(teacher_model, "config") and getattr(teacher_model.config, "quantization_config", None) is not None:
+            is_quantized = True
+            
+        if is_quantized:
+            logger.info("Teacher model is quantized. Skipping `.to(device)` call.")
+            self.teacher_model = teacher_model.eval()
+        else:
+            try:
+                self.teacher_model = teacher_model.to(self.device).eval()
+            except (ValueError, TypeError) as e:
+                logger.warning(f"Could not move teacher model to device using `.to()`: {e}. Using the model as-is.")
+                self.teacher_model = teacher_model.eval()
         log_cuda_memory("After teacher model to device")
         self.alpha = alpha
         self.temperature = temperature

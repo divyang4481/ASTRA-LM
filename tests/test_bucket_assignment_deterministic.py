@@ -15,8 +15,8 @@ def test_bucket_projection_determinism():
     # We will pass dummy keys to run the bucketer
     k = torch.randn(2, 4, 10, head_dim)
     
-    _, diags1 = bucketer(q1, k, local_window=4, nearby_buckets=1)
-    _, diags2 = bucketer(q2, k, local_window=4, nearby_buckets=1)
+    _, diags1 = bucketer(q1, k, local_window=4, nearby_buckets=1, return_diagnostics=True)
+    _, diags2 = bucketer(q2, k, local_window=4, nearby_buckets=1, return_diagnostics=True)
     
     # The bucket assignments must be identical
     q_buckets_1 = diags1["q_buckets"]

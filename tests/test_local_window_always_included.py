@@ -19,7 +19,7 @@ def test_local_window_preservation():
     q = torch.randn(batch, n_heads, seq_len, head_dim)
     k = torch.randn(batch, n_heads, seq_len, head_dim)
     
-    candidate_mask, diags = bucketer(q, k, local_window, nearby_buckets)
+    candidate_mask, diags = bucketer(q, k, local_window, nearby_buckets, return_diagnostics=True)
     
     # Assert coverage is 1.0
     assert diags["local_window_coverage"] == 1.0

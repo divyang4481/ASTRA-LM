@@ -36,7 +36,7 @@ def test_candidate_mask_routing_logic():
     k[0, 0, 1] = torch.tensor([0.0, 1.0, 0.0, 0.0]) # projects to bucket 1
     
     # Run bucketer
-    candidate_mask, diags = bucketer(q, k, local_window, nearby_buckets)
+    candidate_mask, diags = bucketer(q, k, local_window, nearby_buckets, return_diagnostics=True)
     
     # Let's inspect q_buckets and k_buckets
     q_b = diags["q_buckets"][0, 0]
