@@ -37,7 +37,7 @@ def load_teacher_model(
             load_checkpoint(checkpoint_path, model, map_location=device)
         model.to(device)
     else:
-        from transformers import GPT2LMHeadModel
+        from transformers import GPT2LMHeadModel, BitsAndBytesConfig
         print(f"Loading pretrained teacher from Hugging Face: {config_path} with dtype/quant: {dtype}")
         
         if dtype in ("8bit", "4bit"):
@@ -50,15 +50,17 @@ def load_teacher_model(
                 torch_dtype = torch.bfloat16
                 
         if dtype == "8bit":
+            bnb_config = BitsAndBytesConfig(load_in_8bit=True)
             model = GPT2LMHeadModel.from_pretrained(
                 config_path,
-                load_in_8bit=True,
+                quantization_config=bnb_config,
                 device_map="auto" if device == "cuda" else None
             )
         elif dtype == "4bit":
+            bnb_config = BitsAndBytesConfig(load_in_4bit=True)
             model = GPT2LMHeadModel.from_pretrained(
                 config_path,
-                load_in_4bit=True,
+                quantization_config=bnb_config,
                 device_map="auto" if device == "cuda" else None
             )
         else:
