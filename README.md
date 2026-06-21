@@ -2,7 +2,7 @@
 
 ASTRA-LM is a resource-efficient, low-VRAM decoder transformer architecture designed for running and training LLMs on consumer-grade hardware (such as 6 GB NVIDIA laptop GPUs) and free cloud accelerators (like Kaggle or Colab). 
 
-It is built upon the **DHRUVA Transformer** decoder and introduces **CHAKRA Attention**, which reframes self-attention as a structured geometric search on a hypersphere to filter out irrelevant key tokens before computing attention weights.
+It is built upon a standard GPT-style baseline (RoPE, RMSNorm, SwiGLU, GQA) and introduces **VayuSphere**, a lightweight angular adapter that uses hyperspherical centroids to modulate query and key directions before attention.
 
 ---
 
@@ -14,7 +14,11 @@ Input Tokens  -->  Embeddings + RoPE  -->  N × DHRUVA Blocks  -->  RMSNorm  -->
 
 Inside each **DHRUVA Block**, the forward flow is highly modular and config-gated:
 1. **RMSNorm (Pre-Norm)**
-2. **CHAKRA Attention** (or standard Grouped Query Attention control baseline)
+2. **Standard Attention (SDPA)**
+   * Uses PyTorch `scaled_dot_product_attention` for maximum performance (Flash Attention).
+   * Supports Multi-Head Attention (MHA) or Grouped-Query Attention (GQA).
+   * **VayuSphere Adapter** (Optional): A lightweight angular gate that projects Q/K onto a hypersphere and applies a learnable residual scale based on similarity to learned centroids.
+3. **CHAKRA Attention** (Legacy Research Option)
    * **Local sliding window** (always included to preserve syntactic structure)
    * **Hyperspherical Routing** (projects queries and keys onto an $N$-dimensional sphere and groups them into angular buckets)
    * **Exact QK Softmax** computed only on selected candidate buckets
@@ -48,9 +52,11 @@ astra-lm/
 │   │   ├── config.py                 # dataclass parsing configuration
 │   │   ├── decoder.py                # Top-level Decoder Causal LM
 │   │   ├── block.py                  # DHRUVA decoder block
-│   │   ├── attention_gqa.py          # Baseline GQA implementation
-│   │   ├── chakra_attention.py       # CHAKRA Routing attention
-│   │   ├── sphere_bucket.py          # Spherical projection & bucketing
+│   │   ├── attention_sdpa.py         # Production SDPA/Flash Attention path
+│   │   ├── vayusphere_adapter.py     # Lightweight angular Q/K adapter
+│   │   ├── attention_gqa.py          # Baseline GQA implementation (Legacy)
+│   │   ├── chakra_attention.py       # CHAKRA Routing attention (Legacy)
+│   │   ├── sphere_bucket.py          # Spherical projection & bucketing (Legacy)
 │   │   ├── akasha_memory.py          # AKASHA memory manager
 │   │   ├── surya_mixer.py            # SURYA Spectral Mixer (Disabled)
 │   │   ├── indra_phase.py            # INDRA Phase Gating (Disabled)
@@ -151,7 +157,7 @@ python scripts/smoke_forward.py
 To make sure the training loop, checkpointing, and optimizers run without error. **Note:** `smoke.yaml` uses synthetic data by default.
 ```powershell
 $env:PYTHONPATH="src"
-python scripts/train.py --model_config configs/model/astra_nano_6gb.yaml --train_config configs/train/smoke.yaml
+python scripts/train.py --model_config configs/model/gpt_nano_6gb.yaml --train_config configs/train/smoke.yaml
 ```
 
 ### 3. Serious Pretraining on Real Data
@@ -171,17 +177,25 @@ python scripts/prepare_gpt2_pretrain_data.py `
 
 #### Laptop 6GB Training (10M tokens)
 ```powershell
+# Standard GPT Baseline
 python scripts/train.py `
-  --model_config configs/model/astra_nano_6gb.yaml `
+  --model_config configs/model/gpt_nano_6gb.yaml `
+  --train_config configs/train/laptop_6gb_10m.yaml `
+  --data_dir data/fineweb_edu_gpt2_10m `
+  --device cuda
+
+# VayuSphere GPT
+python scripts/train.py `
+  --model_config configs/model/vayusphere_gpt_nano_6gb.yaml `
   --train_config configs/train/laptop_6gb_10m.yaml `
   --data_dir data/fineweb_edu_gpt2_10m `
   --device cuda
 ```
 
-### 4. CHAKRA vs GQA Comparison
-Compare ASTRA (CHAKRA) against a PRISM (GQA) baseline on the same data:
+### 4. Baseline vs VayuSphere Comparison
+Fairly compare standard GPT against the VayuSphere-enabled model:
 ```powershell
-python scripts/compare_chakra_vs_gqa.py `
+python scripts/compare_gpt_vs_vayusphere.py `
   --train_config configs/train/laptop_6gb_10m.yaml `
   --data_dir data/fineweb_edu_gpt2_10m
 ```
@@ -200,13 +214,13 @@ Train a student DHRUVA model under the guidance of a teacher model. You can load
 ```powershell
 $env:PYTHONPATH="src"
 python scripts/train_kd.py `
-  --student_config configs/model/astra_mini_80m.yaml `
+  --student_config configs/model/vayusphere_gpt_nano_6gb.yaml `
   --teacher_config gpt2-medium `
   --train_config configs/train/laptop_distill.yaml `
   --data_dir data/fineweb_edu_gpt2_10m `
   --alpha 0.5 `
   --temperature 2.0 `
-  --allow_random_teacher
+  --teacher_dtype 8bit
 ```
 
 #### Dynamic Context Capping & Low VRAM Long Contexts:

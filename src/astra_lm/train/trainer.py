@@ -10,7 +10,7 @@ from .config import TrainConfig
 from .optimizer import create_optimizer, get_cosine_schedule_with_warmup
 from .checkpoint import save_checkpoint
 from ..eval.perplexity import evaluate_perplexity
-from ..utils.memory import log_cuda_memory, cleanup_memory
+from ..utils.memory import log_cuda_memory, cleanup_memory, log_nvidia_smi
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +72,7 @@ class Trainer:
                     self.scaler = torch.cuda.amp.GradScaler()
                     logger.info("Using fp16 mixed precision with GradScaler")
                 elif self.config.mixed_precision == "auto":
+                    # T4 generally should use fp16. A100+ should use bf16.
                     if torch.cuda.is_bf16_supported():
                         self.autocast_dtype = torch.bfloat16
                         self.use_amp = True
@@ -118,6 +119,7 @@ class Trainer:
         Runs the training loop.
         """
         logger.info("Starting training...")
+        log_nvidia_smi()
         logger.info(f"Total steps: {self.config.max_steps}")
         logger.info(f"Device: {self.device}")
 
@@ -144,6 +146,7 @@ class Trainer:
             input_ids = batch["input_ids"].to(self.device)
             if step == 1:
                 log_cuda_memory("After first batch to device")
+                log_nvidia_smi()
             labels = batch["labels"].to(self.device) if "labels" in batch else input_ids
 
             # Only calculate diagnostics on logging steps to save performance
@@ -160,11 +163,19 @@ class Trainer:
                 # Scale loss for gradient accumulation
                 loss = loss / self.config.gradient_accumulation_steps
 
+            if step == 1:
+                log_cuda_memory("After first forward")
+                log_nvidia_smi()
+
             # Backward pass
             if self.scaler is not None:
                 self.scaler.scale(loss).backward()
             else:
                 loss.backward()
+
+            if step == 1:
+                log_cuda_memory("After first backward")
+                log_nvidia_smi()
 
             # Optimizer step (only at accumulation boundary)
             if step % self.config.gradient_accumulation_steps == 0:
@@ -183,12 +194,18 @@ class Trainer:
                 self.scheduler.step()
                 self.optimizer.zero_grad()
 
+                if step == self.config.gradient_accumulation_steps:
+                    log_cuda_memory("After first optimizer step")
+                    log_nvidia_smi()
+
             # Track tokens
             batch_size, seq_len = input_ids.shape
             tokens_processed += batch_size * seq_len
 
             # Logging
             if step % self.config.logging_steps == 0:
+                if step % (self.config.logging_steps * 10) == 0:
+                    log_nvidia_smi()
                 elapsed = time.time() - start_time
                 tokens_per_sec = tokens_processed / elapsed if elapsed > 0 else 0
                 current_lr = self.scheduler.get_last_lr()[0]

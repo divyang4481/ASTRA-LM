@@ -1,6 +1,7 @@
 import torch
 import gc
 import logging
+import subprocess
 
 logger = logging.getLogger(__name__)
 
@@ -22,3 +23,15 @@ def cleanup_memory():
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
         torch.cuda.reset_peak_memory_stats()
+
+def log_nvidia_smi():
+    """Logs nvidia-smi output for precise GPU monitoring."""
+    try:
+        output = subprocess.check_output([
+            "nvidia-smi",
+            "--query-gpu=name,memory.used,memory.total,utilization.gpu",
+            "--format=csv,noheader,nounits"
+        ], text=True)
+        logger.info(f"[NVIDIA-SMI] {output.strip()}")
+    except Exception as e:
+        logger.warning(f"Could not run nvidia-smi: {e}")
