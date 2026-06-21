@@ -81,16 +81,33 @@ class DecoderBlock(nn.Module):
 
         if self.config.attention_type == "sdpa":
             # Optimized SDPA path with VayuSphere support
-            q, k, v = self.attention.get_qkv(normed_hidden_states, cos, sin)
+            if self.config.vayusphere_apply_stage == "pre_rope":
+                batch_size, seq_len, _ = normed_hidden_states.shape
+                q = self.attention.q_proj(normed_hidden_states).view(batch_size, seq_len, self.attention.n_heads, self.attention.head_dim).transpose(1, 2)
+                k = self.attention.k_proj(normed_hidden_states).view(batch_size, seq_len, self.attention.n_kv_heads, self.attention.head_dim).transpose(1, 2)
+                v = self.attention.v_proj(normed_hidden_states).view(batch_size, seq_len, self.attention.n_kv_heads, self.attention.head_dim).transpose(1, 2)
 
-            # Capture q, k, v before adapter for AKASHA
-            q_raw, k_raw, v_raw = q, k, v
+                # Apply VayuSphere pre-RoPE
+                q, k, vs_diag = self.vayusphere(q, k, return_diagnostics=return_diagnostics)
+                diagnostics.update(vs_diag)
 
-            # --- VayuSphere Adapter Insertion ---
-            q, k, vs_diag = self.vayusphere(q, k, return_diagnostics=return_diagnostics)
-            diagnostics.update(vs_diag)
+                # Apply RoPE
+                from .rope import apply_rotary_pos_emb
+                q, k = apply_rotary_pos_emb(q, k, cos, sin)
 
-            local_attn_out = self.attention.compute_attention(q, k, v, attention_mask)
+                q_raw, k_raw, v_raw = q, k, v
+                local_attn_out = self.attention.compute_attention(q, k, v, attention_mask)
+            else:
+                # Default: post_rope
+                q, k, v = self.attention.get_qkv(normed_hidden_states, cos, sin)
+                q_raw, k_raw, v_raw = q, k, v
+
+                # --- VayuSphere Adapter Insertion (post-RoPE) ---
+                q, k, vs_diag = self.vayusphere(q, k, return_diagnostics=return_diagnostics)
+                diagnostics.update(vs_diag)
+
+                local_attn_out = self.attention.compute_attention(q, k, v, attention_mask)
+
             q, k, v = q_raw, k_raw, v_raw
 
         elif self.config.attention_type == "chakra" or self.config.attention_type == "chakra_legacy":
