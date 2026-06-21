@@ -62,6 +62,9 @@ class VayuSphereAdapter(nn.Module):
 
             if return_diagnostics:
                 diagnostics["vayusphere_q_gate_mean"] = gate_q.mean().item()
+                diagnostics["vayusphere_q_gate_std"] = gate_q.std().item()
+                diagnostics["vayusphere_q_scale_mean"] = scale_q.mean().item()
+                diagnostics["vayusphere_q_scale_std"] = scale_q.std().item()
 
         if "k" in self.target:
             # sim: [B, Hkv, S, C]
@@ -76,5 +79,13 @@ class VayuSphereAdapter(nn.Module):
 
             if return_diagnostics:
                 diagnostics["vayusphere_k_gate_mean"] = gate_k.mean().item()
+                diagnostics["vayusphere_k_gate_std"] = gate_k.std().item()
+                diagnostics["vayusphere_k_scale_mean"] = scale_k.mean().item()
+                diagnostics["vayusphere_k_scale_std"] = scale_k.std().item()
+
+        if return_diagnostics:
+            c_norm = torch.norm(self.centroids, dim=-1)
+            diagnostics["vayusphere_centroid_norm_mean"] = c_norm.mean().item()
+            diagnostics["vayusphere_centroid_norm_std"] = c_norm.std().item()
 
         return q, k, diagnostics

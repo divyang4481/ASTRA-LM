@@ -63,8 +63,19 @@ def main():
     student_model = DecoderForCausalLM(s_m_cfg)
 
     # Initialize teacher model
-    if not args.teacher_checkpoint and not args.allow_random_teacher:
-        raise ValueError("Serious KD training requires --teacher_checkpoint. Use --allow_random_teacher for debugging only.")
+    is_local_teacher_config = (
+        os.path.exists(args.teacher_config)
+        or args.teacher_config.endswith(".yaml")
+        or args.teacher_config.endswith(".yml")
+        or args.teacher_config.endswith(".json")
+    )
+
+    if is_local_teacher_config:
+        logger.info(f"Teacher source: local_config ({args.teacher_config})")
+        if not args.teacher_checkpoint and not args.allow_random_teacher:
+            raise ValueError(f"Local teacher config {args.teacher_config} requires --teacher_checkpoint. Use --allow_random_teacher for debugging only.")
+    else:
+        logger.info(f"Teacher source: huggingface ({args.teacher_config})")
 
     logger.info(f"Loading teacher model from {args.teacher_config} in dtype/quant: {args.teacher_dtype}...")
     teacher_model = load_teacher_model(
