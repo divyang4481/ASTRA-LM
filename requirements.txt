@@ -1,0 +1,9 @@
+torch>=2.0.0
+transformers>=4.30.0
+sentencepiece
+numpy
+tqdm
+pyyaml
+datasets
+pytest>=8.0.0
+ruff>=0.3.0

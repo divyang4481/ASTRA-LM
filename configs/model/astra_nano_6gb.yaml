@@ -1,0 +1,37 @@
+# ASTRA-Nano v0 Model Config (Fits 6GB VRAM Laptop)
+vocab_size: 50257
+max_seq_len: 512
+d_model: 256
+n_layers: 6
+n_heads: 8
+n_kv_heads: 2
+mlp_ratio: 4.0
+dropout: 0.0
+attention_dropout: 0.0
+rope_base: 10000.0
+norm_eps: 0.00001
+bias: false
+tie_word_embeddings: true
+activation: silu
+norm_type: rmsnorm
+
+# CHAKRA Attention Parameters
+attention_type: chakra
+local_window: 128
+sphere_buckets: 32
+nearby_buckets: 1
+use_exact_qk_after_routing: true
+
+# AKASHA Memory Parameters
+memory_window: 256
+anchor_interval: 16
+use_recent_bank: true
+use_anchor_bank: false
+use_summary_bank: false
+use_latent_bank: false
+use_sphere_bank: false
+
+# Config Gates for Extra Modules
+use_surya: false
+use_indra_phase: false
+ffn_type: swiglu

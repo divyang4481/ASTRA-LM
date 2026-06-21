@@ -1,0 +1,55 @@
+# Python Bytecode and Caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual Environments
+.venv/
+venv/
+ENV/
+env/
+astra-lm-env/
+
+# Training Outputs and Checkpoints
+outputs/
+*.pt
+*.pth
+*.npy
+data_cache/
+
+# IDE and Editor settings
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
+.DS_Store
+.ipynb_checkpoints/
+
+# Distribution and Packaging
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+src/*.egg-info/
+.installed.cfg
+
+# Research Documents and original reports
+ASTRA_LM_Research_Integration_Report.docx
