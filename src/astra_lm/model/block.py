@@ -54,6 +54,7 @@ class DecoderBlock(nn.Module):
         sin: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
         return_attn_weights: bool = False,
+        return_diagnostics: bool = False,
     ) -> Tuple[torch.Tensor, Dict[str, Any]]:
         """
         Args:
@@ -76,6 +77,7 @@ class DecoderBlock(nn.Module):
                 sin=sin,
                 attention_mask=attention_mask,
                 return_attn_weights=return_attn_weights,
+                return_diagnostics=return_diagnostics,
             )
         else:
             local_attn_out, q, k, v = self.attention(

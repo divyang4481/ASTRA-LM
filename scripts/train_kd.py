@@ -25,6 +25,8 @@ def main():
     parser.add_argument("--data_dir", type=str, help="Path to directory with train.npy and val.npy")
     parser.add_argument("--allow_random_teacher", action="store_true", help="Allow random teacher if checkpoint missing")
     parser.add_argument("--teacher_dtype", type=str, default="bf16", choices=["fp32", "fp16", "bf16", "8bit", "4bit"], help="Data type or quantization for loading HF teacher model")
+    parser.add_argument("--batch_size", type=int, help="Override per_device_train_batch_size")
+    parser.add_argument("--seq_len", type=int, help="Override max_seq_len for KD")
     
     args = parser.parse_args()
 
@@ -47,6 +49,10 @@ def main():
     
     if args.output_dir:
         t_cfg.output_dir = args.output_dir
+
+    if args.batch_size:
+        t_cfg.per_device_train_batch_size = args.batch_size
+        t_cfg.per_device_eval_batch_size = args.batch_size
 
     # Initialize student model
     logger.info("Initializing student model...")
@@ -75,6 +81,9 @@ def main():
             teacher_seq_len = teacher_model.config.max_seq_len
 
     max_kd_seq_len = min(s_m_cfg.max_seq_len, teacher_seq_len)
+    if args.seq_len:
+        max_kd_seq_len = min(max_kd_seq_len, args.seq_len)
+
     logger.info(f"Setting KD sequence length to {max_kd_seq_len} (Student: {s_m_cfg.max_seq_len}, Teacher: {teacher_seq_len})")
 
     # Initialize dataset

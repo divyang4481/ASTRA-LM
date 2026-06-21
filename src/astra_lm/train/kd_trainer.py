@@ -8,6 +8,7 @@ import time
 from .trainer import Trainer
 from .config import TrainConfig
 from ..distill.kd_losses import kl_distillation_loss, kl_topk_distillation_loss
+from ..utils.memory import log_cuda_memory
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +34,9 @@ class KDTrainer(Trainer):
             eval_dataloader=eval_dataloader,
             device=device
         )
+        log_cuda_memory("Before teacher model to device")
         self.teacher_model = teacher_model.to(self.device).eval()
+        log_cuda_memory("After teacher model to device")
         self.alpha = alpha
         self.temperature = temperature
 
@@ -43,6 +46,8 @@ class KDTrainer(Trainer):
         """
         logger.info("Starting KD training...")
         logger.info(f"Alpha: {self.alpha}, Temperature: {self.temperature}")
+        if torch.cuda.is_available():
+            torch.cuda.reset_peak_memory_stats()
         
         self.model.train()
         
@@ -60,44 +65,65 @@ class KDTrainer(Trainer):
             batch = next(train_iter)
 
             input_ids = batch["input_ids"].to(self.device)
+            if step == 1:
+                log_cuda_memory("After first KD batch to device")
             labels = batch["labels"].to(self.device) if "labels" in batch else input_ids
 
+            # Only calculate diagnostics on logging steps to save performance
+            return_diagnostics = (step % self.config.logging_steps == 0)
+
             # Forward pass with AMP
-            with torch.autocast(device_type=self.device.type, dtype=self.autocast_dtype, enabled=self.use_amp):
-                # Student forward
-                student_outputs = self.model(input_ids=input_ids, labels=labels)
-                student_logits = student_outputs["logits"]
-                ce_loss = student_outputs["loss"]
+            try:
+                with torch.autocast(device_type=self.device.type, dtype=self.autocast_dtype, enabled=self.use_amp):
+                    if step == 1: log_cuda_memory("Before student forward")
+                    # Student forward
+                    student_outputs = self.model(
+                        input_ids=input_ids,
+                        labels=labels,
+                        return_diagnostics=return_diagnostics
+                    )
+                    student_logits = student_outputs["logits"]
+                    ce_loss = student_outputs["loss"]
+                    if step == 1: log_cuda_memory("After student forward")
 
-                # Teacher forward (no grad)
-                with torch.no_grad():
-                    teacher_outputs = self.teacher_model(input_ids=input_ids)
-                    teacher_logits = teacher_outputs["logits"]
+                    # Teacher forward (no grad)
+                    with torch.no_grad():
+                        if step == 1: log_cuda_memory("Before teacher forward")
+                        teacher_outputs = self.teacher_model(input_ids=input_ids)
+                        teacher_logits = teacher_outputs["logits"]
+                        if step == 1: log_cuda_memory("After teacher forward")
 
-                # Perform Top-K distillation to prevent CUDA OOM on full-vocabulary logits tensors
-                # student/teacher logits: [batch_size, seq_len, vocab_size] (e.g. 4 * 1024 * 50257 = 205,827,072 floats)
-                # Allocating full probability/log-probability tensors for F.kl_div uses massive memory.
-                # Restricting to top 100 logit values is mathematicaly equivalent for KD while reducing VRAM memory allocation by 500x.
-                k = min(100, teacher_logits.size(-1))
-                teacher_topk_values, teacher_topk_indices = torch.topk(teacher_logits, k=k, dim=-1)
-                
-                kd_loss = kl_topk_distillation_loss(
-                    student_logits=student_logits,
-                    teacher_topk_indices=teacher_topk_indices,
-                    teacher_topk_values=teacher_topk_values,
-                    temperature=self.temperature
-                )
+                    # Perform Top-K distillation to prevent CUDA OOM on full-vocabulary logits tensors
+                    # student/teacher logits: [batch_size, seq_len, vocab_size] (e.g. 4 * 1024 * 50257 = 205,827,072 floats)
+                    # Allocating full probability/log-probability tensors for F.kl_div uses massive memory.
+                    # Restricting to top 100 logit values is mathematicaly equivalent for KD while reducing VRAM memory allocation by 500x.
+                    k = min(100, teacher_logits.size(-1))
+                    teacher_topk_values, teacher_topk_indices = torch.topk(teacher_logits, k=k, dim=-1)
 
-                # Combined loss
-                loss = (1 - self.alpha) * ce_loss + self.alpha * kd_loss
-                # Scale loss for gradient accumulation
-                loss = loss / self.config.gradient_accumulation_steps
+                    kd_loss = kl_topk_distillation_loss(
+                        student_logits=student_logits,
+                        teacher_topk_indices=teacher_topk_indices,
+                        teacher_topk_values=teacher_topk_values,
+                        temperature=self.temperature
+                    )
 
-            # Backward pass
-            if self.scaler is not None:
-                self.scaler.scale(loss).backward()
-            else:
-                loss.backward()
+                    # Combined loss
+                    loss = (1 - self.alpha) * ce_loss + self.alpha * kd_loss
+                    if step == 1: log_cuda_memory("After loss calculation")
+                    # Scale loss for gradient accumulation
+                    loss = loss / self.config.gradient_accumulation_steps
+
+                # Backward pass
+                if step == 1: log_cuda_memory("Before backward")
+                if self.scaler is not None:
+                    self.scaler.scale(loss).backward()
+                else:
+                    loss.backward()
+                if step == 1: log_cuda_memory("After backward")
+            except torch.cuda.OutOfMemoryError:
+                if torch.cuda.is_available():
+                    logger.error(torch.cuda.memory_summary())
+                raise
 
             # Optimizer step (only at accumulation boundary)
             if step % self.config.gradient_accumulation_steps == 0:

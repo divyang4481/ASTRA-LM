@@ -1,0 +1,17 @@
+# ASTRA-LM Tiny Training Config for 6GB VRAM Laptop
+per_device_train_batch_size: 1
+per_device_eval_batch_size: 1
+learning_rate: 0.0003
+weight_decay: 0.01
+max_steps: 1000
+warmup_steps: 100
+min_lr_ratio: 0.1
+eval_steps: 100
+save_steps: 500
+logging_steps: 1
+max_eval_batches: 5
+output_dir: outputs/astra_tiny_6gb
+
+gradient_accumulation_steps: 16
+mixed_precision: auto
+max_grad_norm: 1.0
