@@ -41,6 +41,10 @@ class ModelConfig:
     vayusphere_temperature_decay_steps: int = 0
     vayusphere_apply_stage: str = "post_rope" # "pre_rope", "post_rope"
     vayusphere_centroid_scope: str = "layer_shared"
+    vayusphere_freeze_centroids: bool = False
+    vayusphere_diagnostics_every_n_steps: int = 1
+    vayusphere_enable_heavy_diagnostics: bool = True
+
 
     # Attention Modulation
     use_learned_attention_temp: bool = False

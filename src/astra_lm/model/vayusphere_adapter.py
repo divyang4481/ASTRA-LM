@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import time
 from typing import Tuple, Dict, Any
 from .config import ModelConfig
 
@@ -19,15 +20,18 @@ class VayuSphereAdapter(nn.Module):
         self.normalize = config.vayusphere_normalize
         self.mode = config.vayusphere_mode
         self.topk = config.vayusphere_topk_centroids
+        self.current_step = 0
 
         if config.use_vayusphere:
             self.centroids = nn.Parameter(
-                torch.randn(config.vayusphere_num_centroids, config.head_dim) * 0.02
+                torch.randn(config.vayusphere_num_centroids, config.head_dim) * 0.02,
+                requires_grad=not config.vayusphere_freeze_centroids
             )
         else:
             self.register_parameter("centroids", None)
 
     def update_temperature(self, global_step: int):
+        self.current_step = global_step
         if self.config.vayusphere_temperature_decay_steps > 0:
             progress = min(global_step / self.config.vayusphere_temperature_decay_steps, 1.0)
             self.temperature = self.config.vayusphere_temperature_start - progress * (
@@ -99,30 +103,31 @@ class VayuSphereAdapter(nn.Module):
 
         # 7. Diagnostics
         if return_diagnostics:
-            # Assignment confidence
-            conf = weights.max(dim=-1)[0].mean().item()
-            diag[f"vayusphere_{prefix}_assignment_confidence"] = conf
+            if self.config.vayusphere_enable_heavy_diagnostics:
+                # Assignment confidence
+                conf = weights.max(dim=-1)[0].mean().item()
+                diag[f"vayusphere_{prefix}_assignment_confidence"] = conf
 
-            # Assignment margin
-            if self.config.vayusphere_num_centroids > 1:
-                top2_val = torch.topk(sim, k=2, dim=-1)[0]
-                margin = (top2_val[..., 0] - top2_val[..., 1]).mean().item()
-                diag[f"vayusphere_{prefix}_assignment_margin"] = margin
+                # Assignment margin
+                if self.config.vayusphere_num_centroids > 1:
+                    top2_val = torch.topk(sim, k=2, dim=-1)[0]
+                    margin = (top2_val[..., 0] - top2_val[..., 1]).mean().item()
+                    diag[f"vayusphere_{prefix}_assignment_margin"] = margin
 
-            # Per-token entropy
-            per_token_ent = - (weights * torch.log(weights + 1e-9)).sum(dim=-1).mean().item()
-            diag[f"vayusphere_{prefix}_per_token_entropy"] = per_token_ent
+                # Per-token entropy
+                per_token_ent = - (weights * torch.log(weights + 1e-9)).sum(dim=-1).mean().item()
+                diag[f"vayusphere_{prefix}_per_token_entropy"] = per_token_ent
 
-            # Global usage entropy
-            soft_usage = weights.mean(dim=(0, 1, 2))
-            usage_entropy = - (soft_usage * torch.log(soft_usage + 1e-9)).sum().item()
-            diag[f"vayusphere_{prefix}_centroid_usage_entropy"] = usage_entropy
+                # Global usage entropy
+                soft_usage = weights.mean(dim=(0, 1, 2))
+                usage_entropy = - (soft_usage * torch.log(soft_usage + 1e-9)).sum().item()
+                diag[f"vayusphere_{prefix}_centroid_usage_entropy"] = usage_entropy
 
-            # Top centroid ratio
-            top_indices = weights.argmax(dim=-1)
-            counts = torch.bincount(top_indices.view(-1), minlength=self.config.vayusphere_num_centroids)
-            top_ratio = (counts.max().float() / top_indices.numel()).item()
-            diag[f"vayusphere_{prefix}_top_centroid_usage_ratio"] = top_ratio
+                # Top centroid ratio
+                top_indices = weights.argmax(dim=-1)
+                counts = torch.bincount(top_indices.view(-1), minlength=self.config.vayusphere_num_centroids)
+                top_ratio = (counts.max().float() / top_indices.numel()).item()
+                diag[f"vayusphere_{prefix}_top_centroid_usage_ratio"] = top_ratio
 
         return x_out, diag
 
@@ -143,23 +148,38 @@ class VayuSphereAdapter(nn.Module):
             return q, k, diagnostics
 
         # If alpha and scale_alpha are both 0, return unchanged but can still log diagnostics if requested
-        # Actually user said: alpha=0 must exactly match baseline.
         if self.alpha == 0 and self.scale_alpha == 0 and not return_diagnostics:
              return q, k, diagnostics
+
+        # Check step filter for diagnostics
+        collect_diag = return_diagnostics
+        if collect_diag and self.config.vayusphere_diagnostics_every_n_steps > 0:
+            if self.current_step % self.config.vayusphere_diagnostics_every_n_steps != 0:
+                collect_diag = False
+
+        if collect_diag:
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+            t0 = time.time()
 
         c_norm = F.normalize(self.centroids, dim=-1, eps=1e-6) if self.normalize else self.centroids
 
         if "q" in self.target:
-            q, q_diag = self._apply_gate(q, c_norm, return_diagnostics=return_diagnostics, prefix="q")
+            q, q_diag = self._apply_gate(q, c_norm, return_diagnostics=collect_diag, prefix="q")
             diagnostics.update(q_diag)
 
         if "k" in self.target:
-            k, k_diag = self._apply_gate(k, c_norm, return_diagnostics=return_diagnostics, prefix="k")
+            k, k_diag = self._apply_gate(k, c_norm, return_diagnostics=collect_diag, prefix="k")
             diagnostics.update(k_diag)
 
-        if return_diagnostics:
+        if collect_diag:
             c_norms = torch.norm(self.centroids, dim=-1)
             diagnostics["vayusphere_centroid_norm_mean"] = c_norms.mean().item()
             diagnostics["vayusphere_centroid_norm_std"] = c_norms.std().item()
+
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+            forward_time = time.time() - t0
+            diagnostics["vayusphere_forward_time_ms"] = forward_time * 1000.0
 
         return q, k, diagnostics

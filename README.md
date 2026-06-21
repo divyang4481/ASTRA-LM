@@ -240,35 +240,52 @@ python scripts/compare_gpt_vs_vayusphere.py `
 
 The resulting `comparison_results.csv` and detailed metric subfolders are saved in the timestamped run directory under `outputs/compare_gpt_vs_vayusphere/<timestamp>_seed<seed>_<mode>/`.
 
-### 5. Ablation Study (VayuSphere v0.2)
+### 5. Ablation Study & Verification (VayuSphere v0.2)
 
-Perform a VayuSphere v0.2 ablation study across multiple variants (baseline, learned attention temperature, scale vs. tangent configurations, pre- vs. post-RoPE stages) to evaluate performance and loss convergence:
+VayuSphere v0.2 supports advanced ablation modes to systematically isolate architecture gains, test random centroid controls, resolve confounds, and measure throughput slowdowns.
 
+#### Step 1: Re-evaluate Existing Checkpoints (Priority 1)
+To verify if loss deltas are statistically sound (ruling out evaluation subset noise), re-evaluate saved checkpoints on a 10x larger validation set (e.g. 100K to 500K tokens):
+```powershell
+$env:PYTHONPATH="src"
+python scripts/reevaluate_checkpoints.py `
+  --run_dir outputs/ablate_v2/my_ablation_run `
+  --data_dir data/fineweb_edu_gpt2_10m `
+  --max_eval_batches 200
+```
+This produces `reevaluation_results.csv` within the run folder containing more precise evaluations of loss and perplexity.
+
+#### Step 2: Running Ablation Sweeps and Control Runs
+Execute a specific ablation mode using `scripts/ablate_v2.py`:
 ```powershell
 $env:PYTHONPATH="src"
 python scripts/ablate_v2.py `
+  --mode control_test `
   --train_config configs/train/laptop_6gb_10m.yaml `
   --data_dir data/fineweb_edu_gpt2_10m `
   --seed 42 `
   --max_steps 10000 `
-  --run_name my_ablation_run
+  --run_name my_control_run
 ```
 
-This runs 6 variants sequentially:
+Available ablation modes (`--mode`):
 
-- `A_baseline`: Standard GPT baseline.
-- `B_learned_temp`: GPT with learned attention temperature enabled.
-- `C_vs_scale_v0.1`: VayuSphere in `scale` mode with alpha=0.1 applied post-RoPE.
-- `D_vs_scale_topk8`: VayuSphere in `scale` mode with alpha=0.1, top-k centroids=8, applied pre-RoPE.
-- `E_vs_tangent_pre_rope_topk8`: VayuSphere in `tangent` mode with alpha=0.1, top-k centroids=8, applied pre-RoPE.
-- `F_vs_tangent_scale_pre_rope_topk8`: VayuSphere in combined `tangent_scale` mode with alpha=0.1, scale_alpha=0.1, top-k centroids=8, applied pre-RoPE.
+- **`control_test`**: Runs the critical scientific control variant `D_frozen_random_centroids_topk8_prerope` alongside the baseline, learned temperature, and trained VayuSphere D variant. (Centroids are kept frozen and initialized randomly to test if gains are due to content-dependent perturbations/regularization rather than learned semantic routing).
+- **`confound_sweep`**: A clean 2x2 grid checking pre- vs. post-RoPE stages against all-centroids vs. top-k8 centroids to isolate which factor drives the performance gain.
+- **`alpha_sweep`**: Sweeps `alpha = [0.05, 0.10, 0.20, 0.40]` on the D pipeline to inspect gate scaling limits.
+- **`target_sweep`**: Compares targeting `q` vs. `k` vs. `qk` to see if scaling both compounds noise.
+- **`multi_seed`**: Performs paired training runs across seeds `[42, 123, 777]` for baseline, learned temp, D, and E variants. Aggregates results into `aggregate_mean_std.csv` detailing win counts and mean/std metrics.
+- **`standard`**: Runs baseline, learned temp, C, D, and E variants (pauses F tangent+scale).
 
-The run output is saved under `outputs/ablate_v2/<run_name>/`. It creates:
+You can load and visualize the results (including aggregated multi-seed tables and re-evaluation curves) using the updated `notebooks/analyze_experiments.ipynb` notebook.
 
-- An `ablation_results.csv` containing final parameters, step-by-step metrics, and common-step loss evaluations.
-- Detailed subdirectories for each variant (`A_baseline/`, `B_learned_temp/`, etc.) containing checkpoint history and metrics log files.
+#### Running via the Interactive Script
+To make running these validation experiments easier, you can use the interactive helper script:
+```powershell
+./scripts/run_detailed_experiments.ps1
+```
+This script will prompt you with a menu to run any of the validation experiments or checkpoint re-evaluations with the correct environment variables set automatically.
 
-You can load and visualize these results side-by-side using the `notebooks/analyze_experiments.ipynb` notebook.
 
 ### 6. Text Generation
 

@@ -37,7 +37,8 @@ def test_training_step_executes():
         eval_steps=10,
         save_steps=10,
         logging_steps=1,
-        output_dir="outputs/test_train"
+        output_dir="outputs/test_train",
+        overwrite_output_dir=True
     )
     
     model = DecoderForCausalLM(model_config)
