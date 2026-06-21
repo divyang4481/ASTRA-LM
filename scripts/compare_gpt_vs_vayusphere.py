@@ -29,7 +29,8 @@ def run_experiment(
     temperature=2.0,
     teacher_dtype="8bit",
     output_dir=None,
-    base_state_dict=None
+    base_state_dict=None,
+    seed=42
 ):
     logging.info(f"--- Starting Experiment: {name} ---")
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -38,8 +39,7 @@ def run_experiment(
     t_cfg = load_config_from_yaml(TrainConfig, train_config_path)
 
     # Set seed in train config
-    if hasattr(args, "seed"):
-        t_cfg.seed = args.seed
+    t_cfg.seed = seed
 
     if output_dir:
         t_cfg.output_dir = output_dir
@@ -164,7 +164,8 @@ def main():
         args.data_dir,
         is_kd=args.kd,
         teacher_config=args.teacher,
-        output_dir=baseline_output_dir
+        output_dir=baseline_output_dir,
+        seed=args.seed
     )
 
     # Get baseline state dict for fair initialization
@@ -189,7 +190,8 @@ def main():
         is_kd=args.kd,
         teacher_config=args.teacher,
         output_dir=vs_output_dir,
-        base_state_dict=baseline_state_dict
+        base_state_dict=baseline_state_dict,
+        seed=args.seed
     )
     model_vs = res_vs.pop("model")
     results.append(res_vs)
