@@ -10,6 +10,7 @@ from .config import TrainConfig
 from .optimizer import create_optimizer, get_cosine_schedule_with_warmup
 from .checkpoint import save_checkpoint
 from ..eval.perplexity import evaluate_perplexity
+from ..utils.memory import log_cuda_memory, cleanup_memory
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +42,9 @@ class Trainer:
                 raise RuntimeError("CUDA device requested but CUDA is not available.")
             logger.info(f"GPU Name: {torch.cuda.get_device_name(0)}")
 
+        log_cuda_memory("Before model to device")
         self.model = model.to(self.device)
+        log_cuda_memory("After model to device")
         self.train_dataloader = train_dataloader
         self.eval_dataloader = eval_dataloader
 
@@ -139,11 +142,20 @@ class Trainer:
             batch = next(train_iter)
 
             input_ids = batch["input_ids"].to(self.device)
+            if step == 1:
+                log_cuda_memory("After first batch to device")
             labels = batch["labels"].to(self.device) if "labels" in batch else input_ids
+
+            # Only calculate diagnostics on logging steps to save performance
+            return_diagnostics = (step % self.config.logging_steps == 0)
 
             # Forward pass with AMP
             with torch.autocast(device_type=self.device.type, dtype=self.autocast_dtype, enabled=self.use_amp):
-                outputs = self.model(input_ids=input_ids, labels=labels)
+                outputs = self.model(
+                    input_ids=input_ids,
+                    labels=labels,
+                    return_diagnostics=return_diagnostics
+                )
                 loss = outputs["loss"]
                 # Scale loss for gradient accumulation
                 loss = loss / self.config.gradient_accumulation_steps

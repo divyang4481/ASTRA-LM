@@ -35,6 +35,7 @@ class DecoderModel(nn.Module):
         attention_mask: Optional[torch.Tensor] = None,
         return_hidden_states: bool = False,
         return_attn_weights: bool = False,
+        return_diagnostics: bool = False,
     ) -> Dict[str, Any]:
         batch_size, seq_len = input_ids.shape
 
@@ -54,6 +55,7 @@ class DecoderModel(nn.Module):
                 sin=sin,
                 attention_mask=attention_mask,
                 return_attn_weights=return_attn_weights,
+                return_diagnostics=return_diagnostics,
             )
 
             if return_hidden_states:
@@ -97,6 +99,7 @@ class DecoderForCausalLM(nn.Module):
         labels: Optional[torch.LongTensor] = None,
         return_hidden_states: bool = False,
         return_attn_weights: bool = False,
+        return_diagnostics: bool = False,
     ) -> Dict[str, Any]:
 
         outputs = self.model(
@@ -104,6 +107,7 @@ class DecoderForCausalLM(nn.Module):
             attention_mask=attention_mask,
             return_hidden_states=return_hidden_states,
             return_attn_weights=return_attn_weights,
+            return_diagnostics=return_diagnostics,
         )
 
         hidden_states = outputs["hidden_states"]

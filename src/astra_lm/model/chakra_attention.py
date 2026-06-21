@@ -39,6 +39,7 @@ class ChakraAttention(nn.Module):
         sin: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
         return_attn_weights: bool = False,
+        return_diagnostics: bool = False,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, Dict[str, Any]]: 
         """
         Returns:
@@ -75,7 +76,8 @@ class ChakraAttention(nn.Module):
             q=q, 
             k=k_expanded, 
             local_window=self.local_window, 
-            nearby_buckets=self.nearby_buckets
+            nearby_buckets=self.nearby_buckets,
+            return_diagnostics=return_diagnostics
         )
         
         # If extra attention mask is passed (like padding mask), combine it
