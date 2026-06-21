@@ -8,7 +8,7 @@ import time
 from .trainer import Trainer
 from .config import TrainConfig
 from ..distill.kd_losses import kl_distillation_loss, kl_topk_distillation_loss
-from ..utils.memory import log_cuda_memory
+from ..utils.memory import log_cuda_memory, log_nvidia_smi
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +35,7 @@ class KDTrainer(Trainer):
             device=device
         )
         log_cuda_memory("Before teacher model to device")
+        log_nvidia_smi()
         # Quantized models (8-bit or 4-bit) loaded with device_map do not support `.to()`
         is_quantized = False
         if hasattr(teacher_model, "config") and getattr(teacher_model.config, "quantization_config", None) is not None:
@@ -50,6 +51,7 @@ class KDTrainer(Trainer):
                 logger.warning(f"Could not move teacher model to device using `.to()`: {e}. Using the model as-is.")
                 self.teacher_model = teacher_model.eval()
         log_cuda_memory("After teacher model to device")
+        log_nvidia_smi()
         self.alpha = alpha
         self.temperature = temperature
 
@@ -81,6 +83,7 @@ class KDTrainer(Trainer):
             input_ids = batch["input_ids"].to(self.device)
             if step == 1:
                 log_cuda_memory("After first KD batch to device")
+                log_nvidia_smi()
             labels = batch["labels"].to(self.device) if "labels" in batch else input_ids
 
             # Only calculate diagnostics on logging steps to save performance
@@ -92,7 +95,9 @@ class KDTrainer(Trainer):
                     # 1. Teacher forward (no grad) - run first to keep its temporary activation memory 
                     # and large logits tensor out of the student's forward pass activation peak.
                     with torch.no_grad():
-                        if step == 1: log_cuda_memory("Before teacher forward")
+                        if step == 1:
+                            log_cuda_memory("Before teacher forward")
+                            log_nvidia_smi()
                         teacher_outputs = self.teacher_model(input_ids=input_ids)
                         teacher_logits = teacher_outputs["logits"]
                         
@@ -104,10 +109,14 @@ class KDTrainer(Trainer):
                         # Proactively delete the massive full-vocabulary logits tensor to free VRAM
                         del teacher_logits
                         del teacher_outputs
-                        if step == 1: log_cuda_memory("After teacher forward")
+                        if step == 1:
+                            log_cuda_memory("After teacher forward")
+                            log_nvidia_smi()
 
                     # 2. Student forward
-                    if step == 1: log_cuda_memory("Before student forward")
+                    if step == 1:
+                        log_cuda_memory("Before student forward")
+                        log_nvidia_smi()
                     student_outputs = self.model(
                         input_ids=input_ids,
                         labels=labels,
@@ -115,7 +124,9 @@ class KDTrainer(Trainer):
                     )
                     student_logits = student_outputs["logits"]
                     ce_loss = student_outputs["loss"]
-                    if step == 1: log_cuda_memory("After student forward")
+                    if step == 1:
+                        log_cuda_memory("After student forward")
+                        log_nvidia_smi()
 
                     kd_loss = kl_topk_distillation_loss(
                         student_logits=student_logits,
@@ -126,17 +137,23 @@ class KDTrainer(Trainer):
 
                     # Combined loss
                     loss = (1 - self.alpha) * ce_loss + self.alpha * kd_loss
-                    if step == 1: log_cuda_memory("After loss calculation")
+                    if step == 1:
+                        log_cuda_memory("After loss calculation")
+                        log_nvidia_smi()
                     # Scale loss for gradient accumulation
                     loss = loss / self.config.gradient_accumulation_steps
 
                 # Backward pass
-                if step == 1: log_cuda_memory("Before backward")
+                if step == 1:
+                    log_cuda_memory("Before backward")
+                    log_nvidia_smi()
                 if self.scaler is not None:
                     self.scaler.scale(loss).backward()
                 else:
                     loss.backward()
-                if step == 1: log_cuda_memory("After backward")
+                if step == 1:
+                    log_cuda_memory("After backward")
+                    log_nvidia_smi()
             except torch.cuda.OutOfMemoryError:
                 if torch.cuda.is_available():
                     logger.error(torch.cuda.memory_summary())
@@ -144,6 +161,9 @@ class KDTrainer(Trainer):
 
             # Optimizer step (only at accumulation boundary)
             if step % self.config.gradient_accumulation_steps == 0:
+                if step == self.config.gradient_accumulation_steps:
+                    log_cuda_memory("After first optimizer step")
+                    log_nvidia_smi()
                 # Gradient clipping
                 if self.scaler is not None:
                     self.scaler.unscale_(self.optimizer)
@@ -165,6 +185,8 @@ class KDTrainer(Trainer):
 
             # Logging
             if step % self.config.logging_steps == 0:
+                if step % (self.config.logging_steps * 10) == 0:
+                    log_nvidia_smi()
                 elapsed = time.time() - start_time
                 tokens_per_sec = tokens_processed / elapsed if elapsed > 0 else 0
                 current_lr = self.scheduler.get_last_lr()[0]

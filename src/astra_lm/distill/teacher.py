@@ -37,38 +37,41 @@ def load_teacher_model(
             load_checkpoint(checkpoint_path, model, map_location=device)
         model.to(device)
     else:
-        from transformers import GPT2LMHeadModel, BitsAndBytesConfig
-        print(f"Loading pretrained teacher from Hugging Face: {config_path} with dtype/quant: {dtype}")
+        from transformers import AutoModelForCausalLM, BitsAndBytesConfig
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info(f"Loading pretrained teacher from Hugging Face: {config_path} with dtype/quant: {dtype}")
         
         if dtype in ("8bit", "4bit"):
             try:
                 import bitsandbytes
                 import accelerate
             except ImportError:
-                print("Warning: bitsandbytes or accelerate not found. Falling back to bfloat16 for teacher model loading.")
+                logger.warning(f"bitsandbytes or accelerate not found. Falling back from {dtype} to bfloat16 for teacher model loading.")
                 dtype = "bf16"
                 torch_dtype = torch.bfloat16
                 
         if dtype == "8bit":
             bnb_config = BitsAndBytesConfig(load_in_8bit=True)
-            model = GPT2LMHeadModel.from_pretrained(
+            model = AutoModelForCausalLM.from_pretrained(
                 config_path,
                 quantization_config=bnb_config,
                 device_map="auto" if device == "cuda" else None
             )
         elif dtype == "4bit":
             bnb_config = BitsAndBytesConfig(load_in_4bit=True)
-            model = GPT2LMHeadModel.from_pretrained(
+            model = AutoModelForCausalLM.from_pretrained(
                 config_path,
                 quantization_config=bnb_config,
                 device_map="auto" if device == "cuda" else None
             )
         else:
-            model = GPT2LMHeadModel.from_pretrained(
+            model = AutoModelForCausalLM.from_pretrained(
                 config_path,
                 torch_dtype=torch_dtype
             )
-            model.to(device)
+            if not hasattr(model, "hf_device_map"): # Don't move if using device_map
+                model.to(device)
         
     model.eval() # Teacher always in eval mode
     

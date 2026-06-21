@@ -1,0 +1,13 @@
+vocab_size: 50257
+max_seq_len: 1024
+d_model: 768
+n_layers: 12
+n_heads: 12
+n_kv_heads: 4
+attention_type: sdpa
+use_flash_attention: true
+use_vayusphere: false
+tie_word_embeddings: true
+activation: silu
+norm_type: rmsnorm
+ffn_type: swiglu

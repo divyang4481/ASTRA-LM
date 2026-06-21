@@ -5,6 +5,8 @@ from .config import ModelConfig
 from .norms import RMSNorm
 from .attention_gqa import GroupedQueryAttention
 from .chakra_attention import ChakraAttention
+from .attention_sdpa import SDPAGPTAttention
+from .vayusphere_adapter import VayuSphereAdapter
 from .akasha_memory import AkashaMemoryManager
 from .mlp import FeedForward
 from .surya_mixer import SuryaMixer
@@ -23,10 +25,16 @@ class DecoderBlock(nn.Module):
 
         # Pre-attention normalization and attention path
         self.norm1 = RMSNorm(config.d_model, eps=config.norm_eps)
-        if config.attention_type == "chakra":
+
+        if config.attention_type == "sdpa":
+            self.attention = SDPAGPTAttention(config)
+        elif config.attention_type == "chakra" or config.attention_type == "chakra_legacy":
             self.attention = ChakraAttention(config)
         else:
             self.attention = GroupedQueryAttention(config)
+
+        # VayuSphere adapter
+        self.vayusphere = VayuSphereAdapter(config)
 
         # AKASHA memory manager
         self.memory = AkashaMemoryManager(config)
@@ -70,7 +78,22 @@ class DecoderBlock(nn.Module):
         normed_hidden_states = self.norm1(hidden_states)
         
         diagnostics = {}
-        if self.config.attention_type == "chakra":
+
+        if self.config.attention_type == "sdpa":
+            # Optimized SDPA path with VayuSphere support
+            q, k, v = self.attention.get_qkv(normed_hidden_states, cos, sin)
+
+            # Capture q, k, v before adapter for AKASHA
+            q_raw, k_raw, v_raw = q, k, v
+
+            # --- VayuSphere Adapter Insertion ---
+            q, k, vs_diag = self.vayusphere(q, k, return_diagnostics=return_diagnostics)
+            diagnostics.update(vs_diag)
+
+            local_attn_out = self.attention.compute_attention(q, k, v, attention_mask)
+            q, k, v = q_raw, k_raw, v_raw
+
+        elif self.config.attention_type == "chakra" or self.config.attention_type == "chakra_legacy":
             local_attn_out, q, k, v, diagnostics = self.attention(
                 hidden_states=normed_hidden_states,
                 cos=cos,
@@ -80,6 +103,7 @@ class DecoderBlock(nn.Module):
                 return_diagnostics=return_diagnostics,
             )
         else:
+            # Default GQA legacy path
             local_attn_out, q, k, v = self.attention(
                 hidden_states=normed_hidden_states,
                 cos=cos,

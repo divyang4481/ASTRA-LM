@@ -18,12 +18,22 @@ class ModelConfig:
     activation: str = "silu"
     norm_type: str = "rmsnorm"
 
-    # CHAKRA Attention Parameters
-    attention_type: str = "chakra" # "gqa" or "chakra"
+    # Attention Parameters
+    attention_type: str = "sdpa" # "sdpa", "gqa" (legacy), or "chakra_legacy"
+    use_flash_attention: bool = True
     local_window: int = 128
     sphere_buckets: int = 32
     nearby_buckets: int = 1
     use_exact_qk_after_routing: bool = True
+
+    # VayuSphere Parameters
+    use_vayusphere: bool = False
+    vayusphere_target: str = "qk" # "q", "k", or "qk"
+    vayusphere_num_centroids: int = 32
+    vayusphere_alpha: float = 0.1
+    vayusphere_normalize: bool = True
+    vayusphere_temperature: float = 1.0
+    vayusphere_centroid_scope: str = "layer_shared"
 
     # AKASHA Memory Parameters
     memory_window: int = 256
