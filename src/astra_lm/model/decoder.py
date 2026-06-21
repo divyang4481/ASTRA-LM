@@ -18,6 +18,17 @@ class DecoderModel(nn.Module):
         self.blocks = nn.ModuleList([DecoderBlock(config) for _ in range(config.n_layers)])
         self.norm = RMSNorm(config.d_model, eps=config.norm_eps)
 
+        # Initialize weights
+        self.apply(self._init_weights)
+
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+
     def forward(
         self,
         input_ids: torch.LongTensor,
@@ -65,8 +76,19 @@ class DecoderForCausalLM(nn.Module):
 
         self.lm_head = nn.Linear(config.d_model, config.vocab_size, bias=False)
 
+        # Initialize weights
+        self.apply(self._init_weights)
+
         if config.tie_word_embeddings:
             self.lm_head.weight = self.model.embeddings.embedding.weight
+
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
     def forward(
         self,

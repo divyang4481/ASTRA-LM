@@ -60,6 +60,8 @@ class PretokenizedDataset(Dataset):
         chunk = self.data[start_idx:end_idx]
 
         if isinstance(chunk, torch.Tensor):
-            return chunk.long()
+            return chunk.to(torch.long)
         else:
-            return torch.tensor(np.array(chunk), dtype=torch.long)
+            # np.array(chunk) ensures it handles memmap and casts correctly
+            # int32 to torch.long for embedding indexing
+            return torch.tensor(np.array(chunk, dtype=np.int64), dtype=torch.long)

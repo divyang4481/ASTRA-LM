@@ -28,6 +28,11 @@ class TrainConfig:
     # Directories
     output_dir: str = "outputs"
 
+    # Training optimizations
+    mixed_precision: str = "auto"  # auto, fp16, bf16, none
+    gradient_accumulation_steps: int = 1
+    max_grad_norm: float = 1.0
+
 @dataclass
 class DataConfig:
     seq_len: int = 128

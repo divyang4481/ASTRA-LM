@@ -62,32 +62,52 @@ class KDTrainer(Trainer):
             input_ids = batch["input_ids"].to(self.device)
             labels = batch["labels"].to(self.device) if "labels" in batch else input_ids
 
-            self.optimizer.zero_grad()
-            
-            # Student forward
-            student_outputs = self.model(input_ids=input_ids, labels=labels)
-            student_logits = student_outputs["logits"]
-            ce_loss = student_outputs["loss"]
+            # Forward pass with AMP
+            with torch.autocast(device_type=self.device.type, dtype=self.autocast_dtype, enabled=self.use_amp):
+                # Student forward
+                student_outputs = self.model(input_ids=input_ids, labels=labels)
+                student_logits = student_outputs["logits"]
+                ce_loss = student_outputs["loss"]
 
-            # Teacher forward (no grad)
-            with torch.no_grad():
-                teacher_outputs = self.teacher_model(input_ids=input_ids)
-                teacher_logits = teacher_outputs["logits"]
+                # Teacher forward (no grad)
+                with torch.no_grad():
+                    teacher_outputs = self.teacher_model(input_ids=input_ids)
+                    teacher_logits = teacher_outputs["logits"]
 
-            # KD loss
-            kd_loss = kl_distillation_loss(
-                student_logits=student_logits,
-                teacher_logits=teacher_logits,
-                temperature=self.temperature
-            )
+                # KD loss
+                kd_loss = kl_distillation_loss(
+                    student_logits=student_logits,
+                    teacher_logits=teacher_logits,
+                    temperature=self.temperature
+                )
 
-            # Combined loss
-            loss = (1 - self.alpha) * ce_loss + self.alpha * kd_loss
+                # Combined loss
+                loss = (1 - self.alpha) * ce_loss + self.alpha * kd_loss
+                # Scale loss for gradient accumulation
+                loss = loss / self.config.gradient_accumulation_steps
 
             # Backward pass
-            loss.backward()
-            self.optimizer.step()
-            self.scheduler.step()
+            if self.scaler is not None:
+                self.scaler.scale(loss).backward()
+            else:
+                loss.backward()
+
+            # Optimizer step (only at accumulation boundary)
+            if step % self.config.gradient_accumulation_steps == 0:
+                # Gradient clipping
+                if self.scaler is not None:
+                    self.scaler.unscale_(self.optimizer)
+
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.max_grad_norm)
+
+                if self.scaler is not None:
+                    self.scaler.step(self.optimizer)
+                    self.scaler.update()
+                else:
+                    self.optimizer.step()
+
+                self.scheduler.step()
+                self.optimizer.zero_grad()
 
             # Track tokens
             batch_size, seq_len = input_ids.shape
@@ -113,9 +133,15 @@ class KDTrainer(Trainer):
                     avg_ratio = sum(candidate_ratios) / len(candidate_ratios)
                     diag_str = f" | Candidate Ratio: {avg_ratio:.2%}"
 
+                mem_str = ""
+                if self.device.type == "cuda":
+                    allocated = torch.cuda.memory_allocated() / (1024**2)
+                    reserved = torch.cuda.memory_reserved() / (1024**2)
+                    mem_str = f" | Mem: {allocated:.0f}/{reserved:.0f}MB"
+
                 logger.info(
                     f"Step {step}/{self.config.max_steps} | "
-                    f"Loss: {loss.item():.4f} (CE: {ce_loss.item():.4f}, KD: {kd_loss.item():.4f}){diag_str} | "
+                    f"Loss: {loss.item() * self.config.gradient_accumulation_steps:.4f} (CE: {ce_loss.item():.4f}, KD: {kd_loss.item():.4f}){diag_str}{mem_str} | "
                     f"LR: {current_lr:.2e} | Tok/s: {tokens_per_sec:.0f}"
                 )
                 start_time = time.time()
