@@ -19,6 +19,25 @@ from astra_lm.utils import load_config_from_yaml
 from astra_lm.utils.seed import set_seed
 
 
+def clone_state_dict_to_cpu(model):
+    return {
+        k: v.detach().cpu().clone()
+        for k, v in model.state_dict().items()
+    }
+
+
+def make_initial_state_dict(model_config_path, seed):
+    m_cfg = load_config_from_yaml(ModelConfig, model_config_path)
+    set_seed(seed)
+    model = DecoderForCausalLM(m_cfg)
+    state = clone_state_dict_to_cpu(model)
+    del model
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    return state
+
+
 def run_experiment(
     name,
     model_config_path,
@@ -32,6 +51,7 @@ def run_experiment(
     output_dir=None,
     base_state_dict=None,
     seed=None,
+    max_steps_override=None,
 ):
     logging.info(f"--- Starting Experiment: {name} ---")
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -43,12 +63,22 @@ def run_experiment(
     if seed is not None:
         t_cfg.seed = seed
 
+    if max_steps_override is not None:
+        t_cfg.max_steps = max_steps_override
+
     if output_dir:
         t_cfg.output_dir = output_dir
     else:
         t_cfg.output_dir = os.path.join("experiments", name)
 
     os.makedirs(t_cfg.output_dir, exist_ok=True)
+
+    # Reset and log CUDA memory before training
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.reset_peak_memory_stats()
+        mem_before = torch.cuda.memory_allocated() / (1024**2)
+        logging.info(f"CUDA memory allocated before training starts: {mem_before:.2f} MB")
 
     # SEEDING: Set seed before model creation for reproducibility
     set_seed(t_cfg.seed)
@@ -116,8 +146,6 @@ def run_experiment(
             device=device,
         )
 
-    if torch.cuda.is_available():
-        torch.cuda.synchronize()
     start_time = time.time()
     trainer.train()
     if torch.cuda.is_available():
@@ -128,10 +156,15 @@ def run_experiment(
     peak_mem = 0
     if torch.cuda.is_available():
         peak_mem = torch.cuda.max_memory_allocated() / (1024**2)
+        logging.info(f"CUDA peak memory allocated during run (includes model): {peak_mem:.2f} MB")
 
     # Get final eval metrics from CSV
     metrics_path = os.path.join(t_cfg.output_dir, "metrics.csv")
     df = pd.read_csv(metrics_path)
+    
+    # Calculate number of eval points for warning verification
+    eval_points = df["eval_loss"].dropna().count()
+    
     final_loss = (
         df["eval_loss"].dropna().iloc[-1]
         if not df["eval_loss"].dropna().empty
@@ -144,6 +177,19 @@ def run_experiment(
     )
 
     params = sum(p.numel() for p in model.parameters())
+    tokens_trained = trainer.total_tokens_trained
+    
+    # Clone state dict to CPU before destroying model
+    cpu_state_dict = clone_state_dict_to_cpu(model)
+
+    # Clean up model to free GPU memory immediately
+    del model
+    del trainer
+    if is_kd:
+        del teacher
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
     return {
         "name": name,
@@ -152,11 +198,10 @@ def run_experiment(
         "params": params,
         "peak_mem_mb": peak_mem,
         "total_time_sec": total_time,
-        "tokens_per_sec": (
-            t_cfg.max_steps * t_cfg.per_device_train_batch_size * m_cfg.max_seq_len
-        )
-        / total_time,
-        "model": model,  # Return model to get state dict for baseline
+        "tokens_per_sec": tokens_trained / total_time if total_time > 0 else 0,
+        "max_steps": t_cfg.max_steps,
+        "eval_points": eval_points,
+        "state_dict": cpu_state_dict,
     }
 
 
@@ -167,64 +212,146 @@ def main():
     parser.add_argument("--kd", action="store_true")
     parser.add_argument("--teacher", type=str, default="gpt2")
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--mode",
+        type=str,
+        choices=["scratch_fair", "warm_start"],
+        default="scratch_fair",
+        help="Experiment mode: scratch_fair or warm_start",
+    )
+    parser.add_argument(
+        "--warm_start_steps",
+        type=int,
+        default=10000,
+        help="Number of steps for the initial warm-up baseline training in warm_start mode",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO)
 
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_name = f"{timestamp}_seed{args.seed}"
+    run_name = f"{timestamp}_seed{args.seed}_{args.mode}"
     run_dir = os.path.join("outputs", "compare_gpt_vs_vayusphere", run_name)
     os.makedirs(run_dir, exist_ok=True)
 
+    t_cfg = load_config_from_yaml(TrainConfig, args.train_config)
+    max_steps = t_cfg.max_steps
+
     results = []
 
-    # 1. Baseline GPT
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-        torch.cuda.reset_peak_memory_stats()
+    if args.mode == "scratch_fair":
+        logging.info(f"Running mode: scratch_fair (total steps: {max_steps})")
+        # 1. Create the initial untrained state dict from baseline GPT config
+        initial_state = make_initial_state_dict(
+            "configs/model/gpt_nano_6gb.yaml",
+            args.seed,
+        )
 
-    baseline_output_dir = os.path.join(run_dir, "baseline")
-    res_gpt = run_experiment(
-        "gpt_baseline",
-        "configs/model/gpt_nano_6gb.yaml",
-        args.train_config,
-        args.data_dir,
-        is_kd=args.kd,
-        teacher_config=args.teacher,
-        output_dir=baseline_output_dir,
-        seed=args.seed,
-    )
+        # 2. Train baseline GPT
+        baseline_output_dir = os.path.join(run_dir, "baseline")
+        res_gpt = run_experiment(
+            "gpt_baseline",
+            "configs/model/gpt_nano_6gb.yaml",
+            args.train_config,
+            args.data_dir,
+            is_kd=args.kd,
+            teacher_config=args.teacher,
+            output_dir=baseline_output_dir,
+            base_state_dict=initial_state,
+            seed=args.seed,
+        )
+        # We don't need its state dict, so pop it to free CPU memory too
+        res_gpt.pop("state_dict")
+        results.append(res_gpt)
 
-    # Get baseline state dict for fair initialization
-    baseline_state_dict = res_gpt["model"].state_dict()
-    # Clean up baseline
-    model_base = res_gpt.pop("model")
-    results.append(res_gpt)
+        # 3. Train VayuSphere GPT
+        vs_output_dir = os.path.join(run_dir, "vayusphere")
+        res_vs = run_experiment(
+            "vayusphere_gpt",
+            "configs/model/vayusphere_gpt_nano_6gb.yaml",
+            args.train_config,
+            args.data_dir,
+            is_kd=args.kd,
+            teacher_config=args.teacher,
+            output_dir=vs_output_dir,
+            base_state_dict=initial_state,
+            seed=args.seed,
+        )
+        res_vs.pop("state_dict")
+        results.append(res_vs)
 
-    del model_base
-    gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-        torch.cuda.reset_peak_memory_stats()
+        # Clean up initial state dict
+        del initial_state
+        gc.collect()
 
-    # 2. VayuSphere GPT
-    vs_output_dir = os.path.join(run_dir, "vayusphere")
-    res_vs = run_experiment(
-        "vayusphere_gpt",
-        "configs/model/vayusphere_gpt_nano_6gb.yaml",
-        args.train_config,
-        args.data_dir,
-        is_kd=args.kd,
-        teacher_config=args.teacher,
-        output_dir=vs_output_dir,
-        base_state_dict=baseline_state_dict,
-        seed=args.seed,
-    )
-    model_vs = res_vs.pop("model")
-    results.append(res_vs)
+    elif args.mode == "warm_start":
+        logging.info(f"Running mode: warm_start")
+        warmup_steps = args.warm_start_steps
+        if warmup_steps >= max_steps:
+            raise ValueError(
+                f"--warm_start_steps ({warmup_steps}) must be less than training max_steps ({max_steps})"
+            )
 
-    del model_vs
-    gc.collect()
+        continued_steps = max_steps - warmup_steps
+        logging.info(
+            f"Phase 1: Warmup GPT Baseline for {warmup_steps} steps"
+        )
+
+        warmup_output_dir = os.path.join(run_dir, "gpt_warmup")
+        res_warmup = run_experiment(
+            "gpt_warmup",
+            "configs/model/gpt_nano_6gb.yaml",
+            args.train_config,
+            args.data_dir,
+            is_kd=args.kd,
+            teacher_config=args.teacher,
+            output_dir=warmup_output_dir,
+            seed=args.seed,
+            max_steps_override=warmup_steps,
+        )
+        warmup_state_dict = res_warmup.pop("state_dict")
+
+        logging.info(
+            f"Phase 2: Continued training for {continued_steps} steps starting from warmup checkpoint"
+        )
+
+        # A) Continue baseline GPT
+        baseline_output_dir = os.path.join(run_dir, "baseline_continued")
+        res_gpt = run_experiment(
+            "gpt_continued",
+            "configs/model/gpt_nano_6gb.yaml",
+            args.train_config,
+            args.data_dir,
+            is_kd=args.kd,
+            teacher_config=args.teacher,
+            output_dir=baseline_output_dir,
+            base_state_dict=warmup_state_dict,
+            seed=args.seed,
+            max_steps_override=continued_steps,
+        )
+        res_gpt.pop("state_dict")
+        results.append(res_gpt)
+
+        # B) Convert and train VayuSphere GPT
+        vs_output_dir = os.path.join(run_dir, "vayusphere_continued")
+        res_vs = run_experiment(
+            "vayusphere_continued",
+            "configs/model/vayusphere_gpt_nano_6gb.yaml",
+            args.train_config,
+            args.data_dir,
+            is_kd=args.kd,
+            teacher_config=args.teacher,
+            output_dir=vs_output_dir,
+            base_state_dict=warmup_state_dict,
+            seed=args.seed,
+            max_steps_override=continued_steps,
+        )
+        res_vs.pop("state_dict")
+        results.append(res_vs)
+
+        # Clean up warmup state dict from CPU
+        del warmup_state_dict
+        gc.collect()
 
     # Report
     print("\n" + "=" * 50)
@@ -233,7 +360,30 @@ def main():
     df_results = pd.DataFrame(results)
     print(df_results.to_string(index=False))
 
-    df_results.to_csv("comparison_results.csv", index=False)
+    # Save CSV inside run_dir
+    csv_path = os.path.join(run_dir, "comparison_results.csv")
+    df_results.to_csv(csv_path, index=False)
+    logging.info(f"Saved comparison report to {csv_path}")
+
+    # Check for warnings
+    if len(results) >= 2:
+        m1, m2 = results[0], results[1]
+        warnings = []
+        if m1["max_steps"] != m2["max_steps"]:
+            warnings.append(
+                f"WARNING: Models have different step counts: {m1['name']} ({m1['max_steps']} steps) vs {m2['name']} ({m2['max_steps']} steps)"
+            )
+        if m1["eval_points"] != m2["eval_points"]:
+            warnings.append(
+                f"WARNING: Models have different number of logged evaluation points: {m1['name']} ({m1['eval_points']} points) vs {m2['name']} ({m2['eval_points']} points)"
+            )
+        if warnings:
+            print("\n" + "!" * 50)
+            print("EXPERIMENT WARNINGS")
+            print("!" * 50)
+            for w in warnings:
+                print(w)
+            print("!" * 50 + "\n")
 
 
 if __name__ == "__main__":

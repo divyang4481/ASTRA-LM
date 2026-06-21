@@ -209,13 +209,32 @@ python scripts/train.py `
 
 ### 4. Baseline vs VayuSphere Comparison
 
-Fairly compare standard GPT against the VayuSphere-enabled model:
+Fairly compare standard GPT against the VayuSphere-enabled model in one of two modes:
 
+#### Mode A: Fair Scratch Comparison (`scratch_fair`)
+Trains both GPT and VayuSphere from the exact same random starting weights:
 ```powershell
+$env:PYTHONPATH="src"
 python scripts/compare_gpt_vs_vayusphere.py `
   --train_config configs/train/laptop_6gb_10m.yaml `
-  --data_dir data/fineweb_edu_gpt2_10m  --seed 42
+  --data_dir data/fineweb_edu_gpt2_10m `
+  --seed 42 `
+  --mode scratch_fair
 ```
+
+#### Mode B: Warm-Start / Retrofit Comparison (`warm_start`)
+Trains a GPT baseline for a set number of steps, saves the checkpoint, and branches into continuing GPT baseline training vs converting it to VayuSphere and training under the same conditions:
+```powershell
+$env:PYTHONPATH="src"
+python scripts/compare_gpt_vs_vayusphere.py `
+  --train_config configs/train/laptop_6gb_10m.yaml `
+  --data_dir data/fineweb_edu_gpt2_10m `
+  --seed 42 `
+  --mode warm_start `
+  --warm_start_steps 10000
+```
+
+The resulting `comparison_results.csv` and detailed metric subfolders are saved in the timestamped run directory under `outputs/compare_gpt_vs_vayusphere/<timestamp>_seed<seed>_<mode>/`.
 
 ### 5. Text Generation
 

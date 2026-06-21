@@ -63,8 +63,20 @@ class VayuSphereAdapter(nn.Module):
             if return_diagnostics:
                 diagnostics["vayusphere_q_gate_mean"] = gate_q.mean().item()
                 diagnostics["vayusphere_q_gate_std"] = gate_q.std().item()
+                diagnostics["vayusphere_q_gate_min"] = gate_q.min().item()
+                diagnostics["vayusphere_q_gate_max"] = gate_q.max().item()
                 diagnostics["vayusphere_q_scale_mean"] = scale_q.mean().item()
                 diagnostics["vayusphere_q_scale_std"] = scale_q.std().item()
+
+                # Centroid usage diagnostics
+                soft_usage_q = weights_q.mean(dim=(0, 1, 2))
+                usage_entropy_q = - (soft_usage_q * torch.log(soft_usage_q + 1e-9)).sum().item()
+                diagnostics["vayusphere_q_centroid_usage_entropy"] = usage_entropy_q
+
+                top_indices_q = weights_q.argmax(dim=-1)
+                counts_q = torch.bincount(top_indices_q.view(-1), minlength=self.config.vayusphere_num_centroids)
+                top_ratio_q = (counts_q.max().float() / top_indices_q.numel()).item()
+                diagnostics["vayusphere_q_top_centroid_usage_ratio"] = top_ratio_q
 
         if "k" in self.target:
             # sim: [B, Hkv, S, C]
@@ -80,8 +92,20 @@ class VayuSphereAdapter(nn.Module):
             if return_diagnostics:
                 diagnostics["vayusphere_k_gate_mean"] = gate_k.mean().item()
                 diagnostics["vayusphere_k_gate_std"] = gate_k.std().item()
+                diagnostics["vayusphere_k_gate_min"] = gate_k.min().item()
+                diagnostics["vayusphere_k_gate_max"] = gate_k.max().item()
                 diagnostics["vayusphere_k_scale_mean"] = scale_k.mean().item()
                 diagnostics["vayusphere_k_scale_std"] = scale_k.std().item()
+
+                # Centroid usage diagnostics
+                soft_usage_k = weights_k.mean(dim=(0, 1, 2))
+                usage_entropy_k = - (soft_usage_k * torch.log(soft_usage_k + 1e-9)).sum().item()
+                diagnostics["vayusphere_k_centroid_usage_entropy"] = usage_entropy_k
+
+                top_indices_k = weights_k.argmax(dim=-1)
+                counts_k = torch.bincount(top_indices_k.view(-1), minlength=self.config.vayusphere_num_centroids)
+                top_ratio_k = (counts_k.max().float() / top_indices_k.numel()).item()
+                diagnostics["vayusphere_k_top_centroid_usage_ratio"] = top_ratio_k
 
         if return_diagnostics:
             c_norm = torch.norm(self.centroids, dim=-1)

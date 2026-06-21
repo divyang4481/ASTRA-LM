@@ -182,6 +182,7 @@ class KDTrainer(Trainer):
             # Track tokens
             batch_size, seq_len = input_ids.shape
             tokens_processed += batch_size * seq_len
+            self.total_tokens_trained += batch_size * seq_len
 
             # Logging
             if step % self.config.logging_steps == 0:

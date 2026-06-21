@@ -110,6 +110,7 @@ class Trainer:
         )
 
         self.global_step = 0
+        self.total_tokens_trained = 0
 
         # Output directory check
         if os.path.exists(self.config.output_dir) and os.listdir(self.config.output_dir) and not self.config.overwrite_output_dir:
@@ -125,7 +126,12 @@ class Trainer:
         with open(self.metrics_file, "w", encoding="utf-8") as f:
             header = "step,loss,eval_loss,eval_perplexity,lr,candidate_ratio,attention_candidate_mode,elapsed_time,seed"
             # Add VayuSphere columns
-            header += ",vs_q_gate_mean,vs_q_gate_std,vs_k_gate_mean,vs_k_gate_std,vs_centroid_grad_norm_mean,vs_centroid_grad_norm_max\n"
+            header += (
+                ",vs_q_gate_mean,vs_q_gate_std,vs_q_gate_min,vs_q_gate_max"
+                ",vs_k_gate_mean,vs_k_gate_std,vs_k_gate_min,vs_k_gate_max"
+                ",vs_centroid_grad_norm,vs_centroid_usage_entropy,vs_top_centroid_usage_ratio"
+                ",vs_per_layer_q_gate_mean,vs_per_layer_k_gate_mean\n"
+            )
             f.write(header)
 
     def train(self):
@@ -232,6 +238,7 @@ class Trainer:
             # Track tokens
             batch_size, seq_len = input_ids.shape
             tokens_processed += batch_size * seq_len
+            self.total_tokens_trained += batch_size * seq_len
 
             # Logging
             if step % self.config.logging_steps == 0:
@@ -284,29 +291,61 @@ class Trainer:
 
                 # Extract VayuSphere diagnostics
                 vs_diag = {
-                    "q_gate_mean": "", "q_gate_std": "",
-                    "k_gate_mean": "", "k_gate_std": "",
-                    "grad_norm_mean": outputs.get("vayusphere_centroid_grad_norm_mean", ""),
-                    "grad_norm_max": outputs.get("vayusphere_centroid_grad_norm_max", "")
+                    "q_gate_mean": "", "q_gate_std": "", "q_gate_min": "", "q_gate_max": "",
+                    "k_gate_mean": "", "k_gate_std": "", "k_gate_min": "", "k_gate_max": "",
+                    "centroid_grad_norm": outputs.get("vayusphere_centroid_grad_norm_mean", ""),
+                    "centroid_usage_entropy": "", "top_centroid_usage_ratio": "",
+                    "per_layer_q_gate_mean": "", "per_layer_k_gate_mean": ""
                 }
 
                 if "diagnostics" in outputs:
-                    q_gates = [d["vayusphere_q_gate_mean"] for d in outputs["diagnostics"] if d and "vayusphere_q_gate_mean" in d]
-                    if q_gates:
-                        vs_diag["q_gate_mean"] = sum(q_gates) / len(q_gates)
-                    q_stds = [d["vayusphere_q_gate_std"] for d in outputs["diagnostics"] if d and "vayusphere_q_gate_std" in d]
-                    if q_stds:
-                        vs_diag["q_gate_std"] = sum(q_stds) / len(q_stds)
-                    k_gates = [d["vayusphere_k_gate_mean"] for d in outputs["diagnostics"] if d and "vayusphere_k_gate_mean" in d]
-                    if k_gates:
-                        vs_diag["k_gate_mean"] = sum(k_gates) / len(k_gates)
-                    k_stds = [d["vayusphere_k_gate_std"] for d in outputs["diagnostics"] if d and "vayusphere_k_gate_std" in d]
-                    if k_stds:
-                        vs_diag["k_gate_std"] = sum(k_stds) / len(k_stds)
+                    q_gate_means = [d["vayusphere_q_gate_mean"] for d in outputs["diagnostics"] if d and "vayusphere_q_gate_mean" in d]
+                    q_gate_stds = [d["vayusphere_q_gate_std"] for d in outputs["diagnostics"] if d and "vayusphere_q_gate_std" in d]
+                    q_gate_mins = [d["vayusphere_q_gate_min"] for d in outputs["diagnostics"] if d and "vayusphere_q_gate_min" in d]
+                    q_gate_maxs = [d["vayusphere_q_gate_max"] for d in outputs["diagnostics"] if d and "vayusphere_q_gate_max" in d]
+                    
+                    k_gate_means = [d["vayusphere_k_gate_mean"] for d in outputs["diagnostics"] if d and "vayusphere_k_gate_mean" in d]
+                    k_gate_stds = [d["vayusphere_k_gate_std"] for d in outputs["diagnostics"] if d and "vayusphere_k_gate_std" in d]
+                    k_gate_mins = [d["vayusphere_k_gate_min"] for d in outputs["diagnostics"] if d and "vayusphere_k_gate_min" in d]
+                    k_gate_maxs = [d["vayusphere_k_gate_max"] for d in outputs["diagnostics"] if d and "vayusphere_k_gate_max" in d]
+
+                    q_entropies = [d["vayusphere_q_centroid_usage_entropy"] for d in outputs["diagnostics"] if d and "vayusphere_q_centroid_usage_entropy" in d]
+                    k_entropies = [d["vayusphere_k_centroid_usage_entropy"] for d in outputs["diagnostics"] if d and "vayusphere_k_centroid_usage_entropy" in d]
+                    
+                    q_top_ratios = [d["vayusphere_q_top_centroid_usage_ratio"] for d in outputs["diagnostics"] if d and "vayusphere_q_top_centroid_usage_ratio" in d]
+                    k_top_ratios = [d["vayusphere_k_top_centroid_usage_ratio"] for d in outputs["diagnostics"] if d and "vayusphere_k_top_centroid_usage_ratio" in d]
+
+                    if q_gate_means:
+                        vs_diag["q_gate_mean"] = sum(q_gate_means) / len(q_gate_means)
+                        vs_diag["q_gate_std"] = sum(q_gate_stds) / len(q_gate_stds) if q_gate_stds else 0.0
+                        vs_diag["q_gate_min"] = min(q_gate_mins)
+                        vs_diag["q_gate_max"] = max(q_gate_maxs)
+                        vs_diag["per_layer_q_gate_mean"] = ";".join([f"{m:.4f}" for m in q_gate_means])
+                    if k_gate_means:
+                        vs_diag["k_gate_mean"] = sum(k_gate_means) / len(k_gate_means)
+                        vs_diag["k_gate_std"] = sum(k_gate_stds) / len(k_gate_stds) if k_gate_stds else 0.0
+                        vs_diag["k_gate_min"] = min(k_gate_mins)
+                        vs_diag["k_gate_max"] = max(k_gate_maxs)
+                        vs_diag["per_layer_k_gate_mean"] = ";".join([f"{m:.4f}" for m in k_gate_means])
+
+                    entropies = q_entropies + k_entropies
+                    if entropies:
+                        vs_diag["centroid_usage_entropy"] = sum(entropies) / len(entropies)
+                    top_ratios = q_top_ratios + k_top_ratios
+                    if top_ratios:
+                        vs_diag["top_centroid_usage_ratio"] = sum(top_ratios) / len(top_ratios)
 
                 with open(self.metrics_file, "a", encoding="utf-8") as f:
-                    vs_str = f"{vs_diag['q_gate_mean']},{vs_diag['q_gate_std']},{vs_diag['k_gate_mean']},{vs_diag['k_gate_std']},{vs_diag['grad_norm_mean']},{vs_diag['grad_norm_max']}"
-                    f.write(f"{step},{step_loss:.4f},,,{current_lr:.2e},{avg_ratio_str},{candidate_mode},{time.time() - self.start_time_total:.2f},{self.config.seed},{vs_str}\n")
+                    vs_str = (
+                        f"{vs_diag['q_gate_mean']},{vs_diag['q_gate_std']},{vs_diag['q_gate_min']},{vs_diag['q_gate_max']},"
+                        f"{vs_diag['k_gate_mean']},{vs_diag['k_gate_std']},{vs_diag['k_gate_min']},{vs_diag['k_gate_max']},"
+                        f"{vs_diag['centroid_grad_norm']},{vs_diag['centroid_usage_entropy']},{vs_diag['top_centroid_usage_ratio']},"
+                        f"\"{vs_diag['per_layer_q_gate_mean']}\",\"{vs_diag['per_layer_k_gate_mean']}\""
+                    )
+                    f.write(
+                        f"{step},{step_loss:.4f},,,{current_lr:.2e},{avg_ratio_str},{candidate_mode},"
+                        f"{time.time() - self.start_time_total:.2f},{self.config.seed},{vs_str}\n"
+                    )
 
                 # Reset tracking for next log interval
                 start_time = time.time()
@@ -317,7 +356,7 @@ class Trainer:
                 eval_results = self._evaluate()
                 with open(self.metrics_file, "a", encoding="utf-8") as f:
                     # Fill with empty for VS diags during eval
-                    vs_empty = ",,,,,"
+                    vs_empty = "," * 12
                     f.write(f"{step},,{eval_results['loss']:.4f},{eval_results['perplexity']:.4f},,,,{time.time() - self.start_time_total:.2f},{self.config.seed},{vs_empty}\n")
 
             # Checkpointing
