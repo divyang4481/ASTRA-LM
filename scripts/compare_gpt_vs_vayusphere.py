@@ -71,6 +71,7 @@ def run_experiment(
     else:
         t_cfg.output_dir = os.path.join("experiments", name)
 
+    t_cfg.overwrite_output_dir = True
     os.makedirs(t_cfg.output_dir, exist_ok=True)
 
     # Reset and log CUDA memory before training
@@ -163,18 +164,22 @@ def run_experiment(
     df = pd.read_csv(metrics_path)
     
     # Calculate number of eval points for warning verification
-    eval_points = df["eval_loss"].dropna().count()
+    eval_points = df["eval_loss"].dropna().count() if "eval_loss" in df.columns else 0
     
-    final_loss = (
-        df["eval_loss"].dropna().iloc[-1]
-        if not df["eval_loss"].dropna().empty
-        else df["loss"].iloc[-1]
-    )
-    final_ppl = (
-        df["eval_perplexity"].dropna().iloc[-1]
-        if not df["eval_perplexity"].dropna().empty
-        else 0
-    )
+    if df.empty:
+        final_loss = float("nan")
+        final_ppl = 0.0
+    else:
+        final_loss = (
+            df["eval_loss"].dropna().iloc[-1]
+            if ("eval_loss" in df.columns and not df["eval_loss"].dropna().empty)
+            else (df["loss"].dropna().iloc[-1] if ("loss" in df.columns and not df["loss"].dropna().empty) else float("nan"))
+        )
+        final_ppl = (
+            df["eval_perplexity"].dropna().iloc[-1]
+            if ("eval_perplexity" in df.columns and not df["eval_perplexity"].dropna().empty)
+            else 0.0
+        )
 
     params = sum(p.numel() for p in model.parameters())
     tokens_trained = trainer.total_tokens_trained

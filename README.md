@@ -212,7 +212,9 @@ python scripts/train.py `
 Fairly compare standard GPT against the VayuSphere-enabled model in one of two modes:
 
 #### Mode A: Fair Scratch Comparison (`scratch_fair`)
+
 Trains both GPT and VayuSphere from the exact same random starting weights:
+
 ```powershell
 $env:PYTHONPATH="src"
 python scripts/compare_gpt_vs_vayusphere.py `
@@ -223,7 +225,9 @@ python scripts/compare_gpt_vs_vayusphere.py `
 ```
 
 #### Mode B: Warm-Start / Retrofit Comparison (`warm_start`)
+
 Trains a GPT baseline for a set number of steps, saves the checkpoint, and branches into continuing GPT baseline training vs converting it to VayuSphere and training under the same conditions:
+
 ```powershell
 $env:PYTHONPATH="src"
 python scripts/compare_gpt_vs_vayusphere.py `
@@ -236,7 +240,37 @@ python scripts/compare_gpt_vs_vayusphere.py `
 
 The resulting `comparison_results.csv` and detailed metric subfolders are saved in the timestamped run directory under `outputs/compare_gpt_vs_vayusphere/<timestamp>_seed<seed>_<mode>/`.
 
-### 5. Text Generation
+### 5. Ablation Study (VayuSphere v0.2)
+
+Perform a VayuSphere v0.2 ablation study across multiple variants (baseline, learned attention temperature, scale vs. tangent configurations, pre- vs. post-RoPE stages) to evaluate performance and loss convergence:
+
+```powershell
+$env:PYTHONPATH="src"
+python scripts/ablate_v2.py `
+  --train_config configs/train/laptop_6gb_10m.yaml `
+  --data_dir data/fineweb_edu_gpt2_10m `
+  --seed 42 `
+  --max_steps 10000 `
+  --run_name my_ablation_run
+```
+
+This runs 6 variants sequentially:
+
+- `A_baseline`: Standard GPT baseline.
+- `B_learned_temp`: GPT with learned attention temperature enabled.
+- `C_vs_scale_v0.1`: VayuSphere in `scale` mode with alpha=0.1 applied post-RoPE.
+- `D_vs_scale_topk8`: VayuSphere in `scale` mode with alpha=0.1, top-k centroids=8, applied pre-RoPE.
+- `E_vs_tangent_pre_rope_topk8`: VayuSphere in `tangent` mode with alpha=0.1, top-k centroids=8, applied pre-RoPE.
+- `F_vs_tangent_scale_pre_rope_topk8`: VayuSphere in combined `tangent_scale` mode with alpha=0.1, scale_alpha=0.1, top-k centroids=8, applied pre-RoPE.
+
+The run output is saved under `outputs/ablate_v2/<run_name>/`. It creates:
+
+- An `ablation_results.csv` containing final parameters, step-by-step metrics, and common-step loss evaluations.
+- Detailed subdirectories for each variant (`A_baseline/`, `B_learned_temp/`, etc.) containing checkpoint history and metrics log files.
+
+You can load and visualize these results side-by-side using the `notebooks/analyze_experiments.ipynb` notebook.
+
+### 6. Text Generation
 
 Generate text using a trained model checkpoint (runs a logits-sampling sequence builder):
 
@@ -245,7 +279,7 @@ $env:PYTHONPATH="src"
 python scripts/generate.py --checkpoint outputs/smoke/checkpoint-10.pt --model_config configs/model/astra_nano_6gb.yaml --prompt "Deep learning is"
 ```
 
-### 6. Knowledge Distillation (DRONA-KD)
+### 7. Knowledge Distillation (DRONA-KD)
 
 Train a student DHRUVA model under the guidance of a teacher model. You can load a local model config and checkpoint, or dynamically fetch a pretrained teacher directly from Hugging Face (such as `gpt2-medium` or `gpt2`):
 

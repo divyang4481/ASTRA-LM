@@ -4,7 +4,11 @@ import os
 import datetime
 import yaml
 import pandas as pd
-from scripts.compare_gpt_vs_vayusphere import run_experiment, make_initial_state_dict
+try:
+    from scripts.compare_gpt_vs_vayusphere import run_experiment, make_initial_state_dict
+except ModuleNotFoundError:
+    from compare_gpt_vs_vayusphere import run_experiment, make_initial_state_dict
+
 
 def main():
     parser = argparse.ArgumentParser()
