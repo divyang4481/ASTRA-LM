@@ -1,3 +1,4 @@
+import os
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
@@ -89,14 +90,25 @@ class Trainer:
             eps=self.config.adam_eps
         )
 
+        # Adjust steps for scheduler based on gradient accumulation updates
+        scheduler_warmup_steps = max(1, self.config.warmup_steps // self.config.gradient_accumulation_steps)
+        scheduler_training_steps = max(1, self.config.max_steps // self.config.gradient_accumulation_steps)
+
         self.scheduler = get_cosine_schedule_with_warmup(
             optimizer=self.optimizer,
-            num_warmup_steps=self.config.warmup_steps,
-            num_training_steps=self.config.max_steps,
+            num_warmup_steps=scheduler_warmup_steps,
+            num_training_steps=scheduler_training_steps,
             min_lr_ratio=self.config.min_lr_ratio
         )
 
         self.global_step = 0
+
+        # Initialize CSV metrics log file
+        os.makedirs(self.config.output_dir, exist_ok=True)
+        self.metrics_file = os.path.join(self.config.output_dir, "metrics.csv")
+        if not os.path.exists(self.metrics_file):
+            with open(self.metrics_file, "w", encoding="utf-8") as f:
+                f.write("step,loss,eval_loss,eval_perplexity,lr,candidate_ratio,elapsed_time\n")
 
     def train(self):
         """
@@ -116,6 +128,7 @@ class Trainer:
 
         train_iter = iter(get_train_batch())
 
+        self.start_time_total = time.time()
         start_time = time.time()
         tokens_processed = 0
         
@@ -178,6 +191,7 @@ class Trainer:
                     ]
                 
                 diag_str = ""
+                avg_ratio = 1.0
                 if candidate_ratios:
                     avg_ratio = sum(candidate_ratios) / len(candidate_ratios)
                     diag_str = f" | Candidate Ratio: {avg_ratio:.2%}"
@@ -195,13 +209,20 @@ class Trainer:
                     f"Tok/s: {tokens_per_sec:.0f}"
                 )
 
+                # Write training metrics to CSV
+                step_loss = loss.item() * self.config.gradient_accumulation_steps
+                with open(self.metrics_file, "a", encoding="utf-8") as f:
+                    f.write(f"{step},{step_loss:.4f},,,{current_lr:.2e},{avg_ratio:.4f},{time.time() - self.start_time_total:.2f}\n")
+
                 # Reset tracking for next log interval
                 start_time = time.time()
                 tokens_processed = 0
 
             # Evaluation
             if step % self.config.eval_steps == 0 and self.eval_dataloader is not None:
-                self._evaluate()
+                eval_results = self._evaluate()
+                with open(self.metrics_file, "a", encoding="utf-8") as f:
+                    f.write(f"{step},,{eval_results['loss']:.4f},{eval_results['perplexity']:.4f},,,{time.time() - self.start_time_total:.2f}\n")
 
             # Checkpointing
             if step % self.config.save_steps == 0:
@@ -236,3 +257,4 @@ class Trainer:
         )
 
         self.model.train()
+        return eval_results

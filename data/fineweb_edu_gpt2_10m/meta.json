@@ -1,0 +1,9 @@
+{
+  "vocab_size": 50257,
+  "tokenizer": "gpt2",
+  "dataset": "HuggingFaceFW/fineweb-edu",
+  "subset": "sample-10BT",
+  "train_tokens": 10000000,
+  "val_tokens": 500000,
+  "eos_token_id": 50256
+}
