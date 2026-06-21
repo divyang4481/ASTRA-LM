@@ -89,6 +89,18 @@ astra-lm/
 
 ASTRA-LM uses standard python package definitions, making it compatible with `uv`, standard `pip` or virtualenvs, and `conda` environments.
 
+### CUDA Support Verification (Windows/Linux)
+Before training, verify your PyTorch installation has CUDA support:
+```powershell
+python -c "import torch; print('torch=', torch.__version__); print('cuda build=', torch.version.cuda); print('cuda available=', torch.cuda.is_available()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'NO CUDA')"
+```
+
+If `cuda available` is `False`, you may need to reinstall PyTorch with the correct CUDA wheel index:
+```powershell
+# Example for CUDA 12.1
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121 --force-reinstall
+```
+
 ### Using `uv` (Fastest)
 If you have `uv` installed, setting up the environment takes seconds:
 ```powershell
@@ -134,24 +146,62 @@ python scripts/smoke_forward.py
 ```
 
 ### 2. Pretraining Sanity Check (Smoke Training)
-To make sure the training loop, checkpointing, and optimizers run without error:
+To make sure the training loop, checkpointing, and optimizers run without error. **Note:** `smoke.yaml` uses synthetic data by default.
 ```powershell
 $env:PYTHONPATH="src"
 python scripts/train.py --model_config configs/model/astra_nano_6gb.yaml --train_config configs/train/smoke.yaml
 ```
 
-### 3. Text Generation
+### 3. Serious Pretraining on Real Data
+For real training, you must first prepare the data and then point the trainer to it using `--data_dir`.
+
+#### Data Preparation (FineWeb-Edu)
+```powershell
+$env:PYTHONPATH="src"
+python scripts/prepare_gpt2_pretrain_data.py `
+  --dataset HuggingFaceFW/fineweb-edu `
+  --name sample-10BT `
+  --tokenizer gpt2 `
+  --train_tokens 10000000 `
+  --val_tokens 500000 `
+  --out_dir data/fineweb_edu_gpt2_10m
+```
+
+#### Laptop 6GB Training (10M tokens)
+```powershell
+python scripts/train.py `
+  --model_config configs/model/astra_nano_6gb.yaml `
+  --train_config configs/train/laptop_6gb_10m.yaml `
+  --data_dir data/fineweb_edu_gpt2_10m `
+  --device cuda
+```
+
+### 4. CHAKRA vs GQA Comparison
+Compare ASTRA (CHAKRA) against a PRISM (GQA) baseline on the same data:
+```powershell
+python scripts/compare_chakra_vs_gqa.py `
+  --train_config configs/train/laptop_6gb_10m.yaml `
+  --data_dir data/fineweb_edu_gpt2_10m
+```
+
+### 5. Text Generation
 Generate text using a trained model checkpoint (runs a logits-sampling sequence builder):
 ```powershell
 $env:PYTHONPATH="src"
 python scripts/generate.py --checkpoint outputs/smoke/checkpoint-10.pt --model_config configs/model/astra_nano_6gb.yaml --prompt "Deep learning is"
 ```
 
-### 4. Knowledge Distillation (DRONA-KD)
-Train a student DHRUVA model under the guidance of a teacher model:
+### 6. Knowledge Distillation (DRONA-KD)
+Train a student DHRUVA model under the guidance of a **trained** teacher model. A teacher checkpoint is required for serious KD.
+
 ```powershell
 $env:PYTHONPATH="src"
-python scripts/train_kd.py --student_config configs/model/astra_nano_6gb.yaml --teacher_config configs/model/prism_gqa_baseline.yaml --train_config configs/train/smoke.yaml
+python scripts/train_kd.py `
+  --student_config configs/model/astra_nano_6gb.yaml `
+  --teacher_config configs/model/prism_gqa_baseline.yaml `
+  --teacher_checkpoint outputs/prism_gqa_fineweb_100m/checkpoint-50000.pt `
+  --train_config configs/train/kaggle_kd_100m.yaml `
+  --data_dir data/fineweb_edu_gpt2_100m
 ```
 
 ---
@@ -162,16 +212,25 @@ Because ASTRA-LM does not depend on custom C++/CUDA compile steps and uses nativ
 
 ### Setup on Kaggle:
 1. Create a new Kaggle Notebook.
-2. In the right panel, select **GPU T4 x2** or **GPU P100** under Accelerator.
-3. Upload the `astra-lm` codebase as a dataset or clone it.
-4. Prepare your dataset by saving it as tokenized numpy arrays (`train.npy` and `val.npy`).
-5. Run the installation and train script:
-   ```python
-   !pip install -r requirements.txt
-   !PYTHONPATH=src python scripts/train.py \
+2. In the right panel, select **GPU P100** under Accelerator (Single P100 is recommended as multi-GPU is not yet implemented).
+3. Clone the repo and install:
+   ```bash
+   !git clone https://github.com/divyang4481/ASTRA-LM.git
+   %cd ASTRA-LM
+   !pip install -e .
+   ```
+4. Prepare data and run training:
+   ```bash
+   !export PYTHONPATH=src && python scripts/prepare_gpt2_pretrain_data.py \
+       --train_tokens 100000000 \
+       --val_tokens 2000000 \
+       --out_dir data/fineweb_edu_gpt2_100m
+
+   !export PYTHONPATH=src && python scripts/train.py \
        --model_config configs/model/astra_nano_6gb.yaml \
-       --train_config configs/train/smoke.yaml \
-       --data_dir /path/to/tokenized/data/
+       --train_config configs/train/kaggle_100m.yaml \
+       --data_dir data/fineweb_edu_gpt2_100m \
+       --device cuda
    ```
 
 ---

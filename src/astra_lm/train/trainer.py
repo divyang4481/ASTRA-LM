@@ -24,11 +24,61 @@ class Trainer:
         eval_dataloader: Optional[DataLoader] = None,
         device: str = "cuda" if torch.cuda.is_available() else "cpu"
     ):
-        self.model = model.to(device)
         self.config = train_config
+        self.device = torch.device(device)
+
+        # Environment diagnostics
+        logger.info(f"Torch Version: {torch.__version__}")
+        if hasattr(torch.version, "cuda"):
+            logger.info(f"CUDA Build: {torch.version.cuda}")
+
+        cuda_available = torch.cuda.is_available()
+        logger.info(f"CUDA Available: {cuda_available}")
+
+        if self.device.type == "cuda":
+            if not cuda_available:
+                raise RuntimeError("CUDA device requested but CUDA is not available.")
+            logger.info(f"GPU Name: {torch.cuda.get_device_name(0)}")
+
+        self.model = model.to(self.device)
         self.train_dataloader = train_dataloader
         self.eval_dataloader = eval_dataloader
-        self.device = torch.device(device)
+
+        # Precision setup
+        self.autocast_dtype = torch.float32
+        self.use_amp = False
+        self.scaler = None
+
+        if self.config.mixed_precision != "none":
+            if self.device.type == "cuda":
+                if self.config.mixed_precision == "bf16":
+                    if torch.cuda.is_bf16_supported():
+                        self.autocast_dtype = torch.bfloat16
+                        self.use_amp = True
+                        logger.info("Using bf16 mixed precision")
+                    else:
+                        logger.warning("bf16 requested but not supported by GPU. Falling back to fp16.")
+                        self.autocast_dtype = torch.float16
+                        self.use_amp = True
+                        self.scaler = torch.cuda.amp.GradScaler()
+                        logger.info("Using fp16 mixed precision with GradScaler")
+                elif self.config.mixed_precision == "fp16":
+                    self.autocast_dtype = torch.float16
+                    self.use_amp = True
+                    self.scaler = torch.cuda.amp.GradScaler()
+                    logger.info("Using fp16 mixed precision with GradScaler")
+                elif self.config.mixed_precision == "auto":
+                    if torch.cuda.is_bf16_supported():
+                        self.autocast_dtype = torch.bfloat16
+                        self.use_amp = True
+                        logger.info("Using auto-selected bf16 mixed precision")
+                    else:
+                        self.autocast_dtype = torch.float16
+                        self.use_amp = True
+                        self.scaler = torch.cuda.amp.GradScaler()
+                        logger.info("Using auto-selected fp16 mixed precision with GradScaler")
+            else:
+                logger.warning(f"Mixed precision {self.config.mixed_precision} requested on CPU, which is not supported in this trainer. Using float32.")
 
         # Set up optimizer and scheduler
         self.optimizer = create_optimizer(
@@ -78,18 +128,35 @@ class Trainer:
             input_ids = batch["input_ids"].to(self.device)
             labels = batch["labels"].to(self.device) if "labels" in batch else input_ids
 
-            # Forward pass
-            self.optimizer.zero_grad()
-            outputs = self.model(input_ids=input_ids, labels=labels)
-
-            loss = outputs["loss"]
+            # Forward pass with AMP
+            with torch.autocast(device_type=self.device.type, dtype=self.autocast_dtype, enabled=self.use_amp):
+                outputs = self.model(input_ids=input_ids, labels=labels)
+                loss = outputs["loss"]
+                # Scale loss for gradient accumulation
+                loss = loss / self.config.gradient_accumulation_steps
 
             # Backward pass
-            loss.backward()
+            if self.scaler is not None:
+                self.scaler.scale(loss).backward()
+            else:
+                loss.backward()
 
-            # Optimizer step
-            self.optimizer.step()
-            self.scheduler.step()
+            # Optimizer step (only at accumulation boundary)
+            if step % self.config.gradient_accumulation_steps == 0:
+                # Gradient clipping
+                if self.scaler is not None:
+                    self.scaler.unscale_(self.optimizer)
+
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.max_grad_norm)
+
+                if self.scaler is not None:
+                    self.scaler.step(self.optimizer)
+                    self.scaler.update()
+                else:
+                    self.optimizer.step()
+
+                self.scheduler.step()
+                self.optimizer.zero_grad()
 
             # Track tokens
             batch_size, seq_len = input_ids.shape
@@ -115,9 +182,15 @@ class Trainer:
                     avg_ratio = sum(candidate_ratios) / len(candidate_ratios)
                     diag_str = f" | Candidate Ratio: {avg_ratio:.2%}"
 
+                mem_str = ""
+                if self.device.type == "cuda":
+                    allocated = torch.cuda.memory_allocated() / (1024**2)
+                    reserved = torch.cuda.memory_reserved() / (1024**2)
+                    mem_str = f" | Mem: {allocated:.0f}/{reserved:.0f}MB"
+
                 logger.info(
                     f"Step {step}/{self.config.max_steps} | "
-                    f"Loss: {loss.item():.4f}{diag_str} | "
+                    f"Loss: {loss.item() * self.config.gradient_accumulation_steps:.4f}{diag_str}{mem_str} | "
                     f"LR: {current_lr:.2e} | "
                     f"Tok/s: {tokens_per_sec:.0f}"
                 )
