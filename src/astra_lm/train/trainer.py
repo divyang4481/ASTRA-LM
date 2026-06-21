@@ -130,7 +130,8 @@ class Trainer:
                 ",vs_q_gate_mean,vs_q_gate_std,vs_q_gate_min,vs_q_gate_max"
                 ",vs_k_gate_mean,vs_k_gate_std,vs_k_gate_min,vs_k_gate_max"
                 ",vs_centroid_grad_norm,vs_centroid_usage_entropy,vs_top_centroid_usage_ratio"
-                ",vs_per_layer_q_gate_mean,vs_per_layer_k_gate_mean\n"
+                ",vs_per_layer_q_gate_mean,vs_per_layer_k_gate_mean"
+                ",vs_q_conf,vs_k_conf,vs_q_margin,vs_k_margin,vs_q_token_ent,vs_k_token_ent\n"
             )
             f.write(header)
 
@@ -167,6 +168,13 @@ class Trainer:
         
         for step in range(start_step, self.config.max_steps + 1):
             self.global_step = step
+
+            # Update VayuSphere temperature
+            if self.model.config.use_vayusphere:
+                for module in self.model.modules():
+                    if hasattr(module, "update_temperature"):
+                        module.update_temperature(step)
+
             batch = next(train_iter)
 
             input_ids = batch["input_ids"].to(self.device)
@@ -295,7 +303,9 @@ class Trainer:
                     "k_gate_mean": "", "k_gate_std": "", "k_gate_min": "", "k_gate_max": "",
                     "centroid_grad_norm": outputs.get("vayusphere_centroid_grad_norm_mean", ""),
                     "centroid_usage_entropy": "", "top_centroid_usage_ratio": "",
-                    "per_layer_q_gate_mean": "", "per_layer_k_gate_mean": ""
+                    "per_layer_q_gate_mean": "", "per_layer_k_gate_mean": "",
+                    "q_conf": "", "k_conf": "", "q_margin": "", "k_margin": "",
+                    "q_token_ent": "", "k_token_ent": ""
                 }
 
                 if "diagnostics" in outputs:
@@ -314,6 +324,13 @@ class Trainer:
                     
                     q_top_ratios = [d["vayusphere_q_top_centroid_usage_ratio"] for d in outputs["diagnostics"] if d and "vayusphere_q_top_centroid_usage_ratio" in d]
                     k_top_ratios = [d["vayusphere_k_top_centroid_usage_ratio"] for d in outputs["diagnostics"] if d and "vayusphere_k_top_centroid_usage_ratio" in d]
+
+                    q_confs = [d["vayusphere_q_assignment_confidence"] for d in outputs["diagnostics"] if d and "vayusphere_q_assignment_confidence" in d]
+                    k_confs = [d["vayusphere_k_assignment_confidence"] for d in outputs["diagnostics"] if d and "vayusphere_k_assignment_confidence" in d]
+                    q_margins = [d["vayusphere_q_assignment_margin"] for d in outputs["diagnostics"] if d and "vayusphere_q_assignment_margin" in d]
+                    k_margins = [d["vayusphere_k_assignment_margin"] for d in outputs["diagnostics"] if d and "vayusphere_k_assignment_margin" in d]
+                    q_token_ents = [d["vayusphere_q_per_token_entropy"] for d in outputs["diagnostics"] if d and "vayusphere_q_per_token_entropy" in d]
+                    k_token_ents = [d["vayusphere_k_per_token_entropy"] for d in outputs["diagnostics"] if d and "vayusphere_k_per_token_entropy" in d]
 
                     if q_gate_means:
                         vs_diag["q_gate_mean"] = sum(q_gate_means) / len(q_gate_means)
@@ -335,12 +352,21 @@ class Trainer:
                     if top_ratios:
                         vs_diag["top_centroid_usage_ratio"] = sum(top_ratios) / len(top_ratios)
 
+                    if q_confs: vs_diag["q_conf"] = sum(q_confs) / len(q_confs)
+                    if k_confs: vs_diag["k_conf"] = sum(k_confs) / len(k_confs)
+                    if q_margins: vs_diag["q_margin"] = sum(q_margins) / len(q_margins)
+                    if k_margins: vs_diag["k_margin"] = sum(k_margins) / len(k_margins)
+                    if q_token_ents: vs_diag["q_token_ent"] = sum(q_token_ents) / len(q_token_ents)
+                    if k_token_ents: vs_diag["k_token_ent"] = sum(k_token_ents) / len(k_token_ents)
+
                 with open(self.metrics_file, "a", encoding="utf-8") as f:
                     vs_str = (
                         f"{vs_diag['q_gate_mean']},{vs_diag['q_gate_std']},{vs_diag['q_gate_min']},{vs_diag['q_gate_max']},"
                         f"{vs_diag['k_gate_mean']},{vs_diag['k_gate_std']},{vs_diag['k_gate_min']},{vs_diag['k_gate_max']},"
                         f"{vs_diag['centroid_grad_norm']},{vs_diag['centroid_usage_entropy']},{vs_diag['top_centroid_usage_ratio']},"
-                        f"\"{vs_diag['per_layer_q_gate_mean']}\",\"{vs_diag['per_layer_k_gate_mean']}\""
+                        f"\"{vs_diag['per_layer_q_gate_mean']}\",\"{vs_diag['per_layer_k_gate_mean']}\","
+                        f"{vs_diag['q_conf']},{vs_diag['k_conf']},{vs_diag['q_margin']},{vs_diag['k_margin']},"
+                        f"{vs_diag['q_token_ent']},{vs_diag['k_token_ent']}"
                     )
                     f.write(
                         f"{step},{step_loss:.4f},,,{current_lr:.2e},{avg_ratio_str},{candidate_mode},"
@@ -355,8 +381,8 @@ class Trainer:
             if step % self.config.eval_steps == 0 and self.eval_dataloader is not None:
                 eval_results = self._evaluate()
                 with open(self.metrics_file, "a", encoding="utf-8") as f:
-                    # Fill with empty for VS diags during eval
-                    vs_empty = "," * 12
+                    # Fill with empty for VS diags during eval (now 18 columns)
+                    vs_empty = "," * 18
                     f.write(f"{step},,{eval_results['loss']:.4f},{eval_results['perplexity']:.4f},,,,{time.time() - self.start_time_total:.2f},{self.config.seed},{vs_empty}\n")
 
             # Checkpointing

@@ -24,6 +24,11 @@ class SDPAGPTAttention(nn.Module):
         self.attn_dropout = config.attention_dropout
         self.resid_dropout = nn.Dropout(config.dropout)
 
+        if config.use_learned_attention_temp:
+            self.log_attn_temp = nn.Parameter(torch.zeros(self.n_heads))
+        else:
+            self.register_parameter("log_attn_temp", None)
+
     def get_qkv(self, hidden_states: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         batch_size, seq_len, _ = hidden_states.shape
         q = self.q_proj(hidden_states)
@@ -46,6 +51,11 @@ class SDPAGPTAttention(nn.Module):
         attention_mask: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
         batch_size, n_heads, seq_len, head_dim = q.shape
+
+        if self.log_attn_temp is not None:
+            # log_attn_temp: [H] -> [1, H, 1, 1]
+            scale = torch.exp(self.log_attn_temp).view(1, n_heads, 1, 1)
+            q = q * scale
 
         k_sdpa, v_sdpa = self.expand_kv(k, v)
 

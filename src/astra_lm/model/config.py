@@ -28,12 +28,22 @@ class ModelConfig:
 
     # VayuSphere Parameters
     use_vayusphere: bool = False
+    vayusphere_mode: str = "scale" # "scale", "tangent", "tangent_scale"
     vayusphere_target: str = "qk" # "q", "k", or "qk"
     vayusphere_num_centroids: int = 32
     vayusphere_alpha: float = 0.1
+    vayusphere_scale_alpha: float = 0.1
+    vayusphere_topk_centroids: int = -1
     vayusphere_normalize: bool = True
     vayusphere_temperature: float = 1.0
+    vayusphere_temperature_start: float = 1.0
+    vayusphere_temperature_min: float = 1.0
+    vayusphere_temperature_decay_steps: int = 0
+    vayusphere_apply_stage: str = "post_rope" # "pre_rope", "post_rope"
     vayusphere_centroid_scope: str = "layer_shared"
+
+    # Attention Modulation
+    use_learned_attention_temp: bool = False
 
     # AKASHA Memory Parameters
     memory_window: int = 256

@@ -225,6 +225,11 @@ def main():
         default=10000,
         help="Number of steps for the initial warm-up baseline training in warm_start mode",
     )
+    parser.add_argument(
+        "--common_step_compare",
+        action="store_true",
+        help="Truncate comparison to the minimum common evaluation steps reached by all models",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO)
@@ -365,18 +370,80 @@ def main():
     df_results.to_csv(csv_path, index=False)
     logging.info(f"Saved comparison report to {csv_path}")
 
-    # Check for warnings
+    # Check for warnings and compute common step metrics
     if len(results) >= 2:
-        m1, m2 = results[0], results[1]
         warnings = []
-        if m1["max_steps"] != m2["max_steps"]:
-            warnings.append(
-                f"WARNING: Models have different step counts: {m1['name']} ({m1['max_steps']} steps) vs {m2['name']} ({m2['max_steps']} steps)"
-            )
-        if m1["eval_points"] != m2["eval_points"]:
-            warnings.append(
-                f"WARNING: Models have different number of logged evaluation points: {m1['name']} ({m1['eval_points']} points) vs {m2['name']} ({m2['eval_points']} points)"
-            )
+
+        # 1. Check for step mismatches
+        max_steps_list = [r["max_steps"] for r in results]
+        eval_points_list = [r["eval_points"] for r in results]
+
+        if len(set(max_steps_list)) > 1:
+            warnings.append(f"WARNING: Models have different max_steps: {max_steps_list}")
+        if len(set(eval_points_list)) > 1:
+            warnings.append(f"WARNING: Models have different evaluation points: {eval_points_list}")
+
+        # 2. Common step comparison logic
+        if args.common_step_compare or True: # Always show if we have baseline
+            # Load all metrics.csv
+            metrics_dfs = {}
+            for r in results:
+                m_path = os.path.join(run_dir, r["name"].replace("_gpt", "").replace("gpt_", ""), "metrics.csv")
+                # Handle path differences
+                actual_m_path = None
+                possible_paths = [
+                    os.path.join(run_dir, r["name"], "metrics.csv"),
+                    os.path.join(run_dir, "baseline", "metrics.csv") if "baseline" in r["name"] else None,
+                    os.path.join(run_dir, "vayusphere", "metrics.csv") if "vayusphere" in r["name"] else None,
+                    os.path.join(run_dir, "gpt_continued", "metrics.csv") if "continued" in r["name"] and "gpt" in r["name"] else None,
+                    os.path.join(run_dir, "vayusphere_continued", "metrics.csv") if "continued" in r["name"] and "vayusphere" in r["name"] else None,
+                ]
+                for p in possible_paths:
+                    if p and os.path.exists(p):
+                        actual_m_path = p
+                        break
+
+                if actual_m_path:
+                    m_df = pd.read_csv(actual_m_path)
+                    m_df = m_df[m_df["eval_loss"].notna()]
+                    metrics_dfs[r["name"]] = m_df
+
+            if len(metrics_dfs) >= 2:
+                # Find common steps
+                common_steps = None
+                for name, m_df in metrics_dfs.items():
+                    steps = set(m_df["step"].tolist())
+                    if common_steps is None:
+                        common_steps = steps
+                    else:
+                        common_steps = common_steps.intersection(steps)
+
+                if common_steps:
+                    common_steps = sorted(list(common_steps))
+                    last_common_step = common_steps[-1]
+                    logging.info(f"Comparing at common step: {last_common_step}")
+
+                    print("\n" + "-" * 50)
+                    print(f"COMMON STEP COMPARISON (Step {last_common_step})")
+                    print("-" * 50)
+
+                    baseline_name = results[0]["name"]
+                    baseline_val = metrics_dfs[baseline_name][metrics_dfs[baseline_name]["step"] == last_common_step]["eval_loss"].values[0]
+
+                    print(f"{'Model':<25} | {'Eval Loss':<10} | {'Delta':<10} | {'Best (Common)':<10}")
+                    for r in results:
+                        name = r["name"]
+                        if name in metrics_dfs:
+                            m_df = metrics_dfs[name]
+                            common_df = m_df[m_df["step"] <= last_common_step]
+                            current_val = m_df[m_df["step"] == last_common_step]["eval_loss"].values[0]
+                            best_val = common_df["eval_loss"].min()
+                            delta = current_val - baseline_val
+                            print(f"{name:<25} | {current_val:.4f}     | {delta:+.4f}    | {best_val:.4f}")
+                    print("-" * 50)
+                else:
+                    warnings.append("WARNING: No common evaluation steps found for comparison.")
+
         if warnings:
             print("\n" + "!" * 50)
             print("EXPERIMENT WARNINGS")
