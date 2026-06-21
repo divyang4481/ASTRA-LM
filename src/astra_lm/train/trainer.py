@@ -11,6 +11,7 @@ from .optimizer import create_optimizer, get_cosine_schedule_with_warmup
 from .checkpoint import save_checkpoint
 from ..eval.perplexity import evaluate_perplexity
 from ..utils.memory import log_cuda_memory, cleanup_memory, log_nvidia_smi
+from ..utils.seed import set_seed
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +29,9 @@ class Trainer:
     ):
         self.config = train_config
         self.device = torch.device(device)
+
+        # Set seed early
+        set_seed(self.config.seed)
 
         # Environment diagnostics
         logger.info(f"Torch Version: {torch.__version__}")
@@ -107,12 +111,22 @@ class Trainer:
 
         self.global_step = 0
 
+        # Output directory check
+        if os.path.exists(self.config.output_dir) and os.listdir(self.config.output_dir) and not self.config.overwrite_output_dir:
+            raise ValueError(
+                f"Output directory ({self.config.output_dir}) already exists and is not empty. "
+                "Use --overwrite_output_dir to overcome."
+            )
+
         # Initialize CSV metrics log file
         os.makedirs(self.config.output_dir, exist_ok=True)
         self.metrics_file = os.path.join(self.config.output_dir, "metrics.csv")
-        if not os.path.exists(self.metrics_file):
-            with open(self.metrics_file, "w", encoding="utf-8") as f:
-                f.write("step,loss,eval_loss,eval_perplexity,lr,candidate_ratio,elapsed_time\n")
+        # Always write header since we should be in a fresh or overwritten directory
+        with open(self.metrics_file, "w", encoding="utf-8") as f:
+            header = "step,loss,eval_loss,eval_perplexity,lr,candidate_ratio,attention_candidate_mode,elapsed_time,seed"
+            # Add VayuSphere columns
+            header += ",vs_q_gate_mean,vs_q_gate_std,vs_k_gate_mean,vs_k_gate_std,vs_centroid_grad_norm_mean,vs_centroid_grad_norm_max\n"
+            f.write(header)
 
     def train(self):
         """
@@ -125,6 +139,10 @@ class Trainer:
 
         self.model.train()
 
+        # Ensure dataloader uses seed if it's shufflable
+        if hasattr(self.train_dataloader, "generator") and self.train_dataloader.generator is not None:
+            self.train_dataloader.generator.manual_seed(self.config.seed)
+
         # Create an infinite iterator for the training dataloader
         def get_train_batch():
             while True:
@@ -133,6 +151,8 @@ class Trainer:
 
         train_iter = iter(get_train_batch())
 
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
         self.start_time_total = time.time()
         start_time = time.time()
         tokens_processed = 0
@@ -173,6 +193,17 @@ class Trainer:
             else:
                 loss.backward()
 
+            # Collect centroid gradients if VayuSphere is active and it's a logging step
+            if return_diagnostics and self.model.config.use_vayusphere:
+                centroid_grads = []
+                for name, param in self.model.named_parameters():
+                    if "centroids" in name and param.grad is not None:
+                        centroid_grads.append(param.grad.detach().norm().item())
+
+                if centroid_grads:
+                    outputs["vayusphere_centroid_grad_norm_mean"] = sum(centroid_grads) / len(centroid_grads)
+                    outputs["vayusphere_centroid_grad_norm_max"] = max(centroid_grads)
+
             if step == 1:
                 log_cuda_memory("After first backward")
                 log_nvidia_smi()
@@ -206,23 +237,33 @@ class Trainer:
             if step % self.config.logging_steps == 0:
                 if step % (self.config.logging_steps * 10) == 0:
                     log_nvidia_smi()
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()
                 elapsed = time.time() - start_time
                 tokens_per_sec = tokens_processed / elapsed if elapsed > 0 else 0
                 current_lr = self.scheduler.get_last_lr()[0]
 
                 # Aggregate candidate ratios across all layers
                 candidate_ratios = []
+                candidate_mode = "none"
                 if "diagnostics" in outputs:
                     candidate_ratios = [
                         diag["candidate_ratio"] 
                         for diag in outputs["diagnostics"] 
                         if diag and "candidate_ratio" in diag
                     ]
-                
+                    # Determine candidate mode
+                    if any("chakra" in str(diag.get("mode", "")) for diag in outputs["diagnostics"] if diag):
+                         candidate_mode = "chakra_legacy"
+                    elif self.model.config.use_vayusphere and self.model.config.vayusphere_alpha > 0:
+                        # For now qk_gate has no pruning, so it's none, but we might have vayusphere_sparse later
+                        pass
+
                 diag_str = ""
-                avg_ratio = 1.0
+                avg_ratio_str = ""
                 if candidate_ratios:
                     avg_ratio = sum(candidate_ratios) / len(candidate_ratios)
+                    avg_ratio_str = f"{avg_ratio:.4f}"
                     diag_str = f" | Candidate Ratio: {avg_ratio:.2%}"
 
                 mem_str = ""
@@ -240,8 +281,32 @@ class Trainer:
 
                 # Write training metrics to CSV
                 step_loss = loss.item() * self.config.gradient_accumulation_steps
+
+                # Extract VayuSphere diagnostics
+                vs_diag = {
+                    "q_gate_mean": "", "q_gate_std": "",
+                    "k_gate_mean": "", "k_gate_std": "",
+                    "grad_norm_mean": outputs.get("vayusphere_centroid_grad_norm_mean", ""),
+                    "grad_norm_max": outputs.get("vayusphere_centroid_grad_norm_max", "")
+                }
+
+                if "diagnostics" in outputs:
+                    q_gates = [d["vayusphere_q_gate_mean"] for d in outputs["diagnostics"] if d and "vayusphere_q_gate_mean" in d]
+                    if q_gates:
+                        vs_diag["q_gate_mean"] = sum(q_gates) / len(q_gates)
+                    q_stds = [d["vayusphere_q_gate_std"] for d in outputs["diagnostics"] if d and "vayusphere_q_gate_std" in d]
+                    if q_stds:
+                        vs_diag["q_gate_std"] = sum(q_stds) / len(q_stds)
+                    k_gates = [d["vayusphere_k_gate_mean"] for d in outputs["diagnostics"] if d and "vayusphere_k_gate_mean" in d]
+                    if k_gates:
+                        vs_diag["k_gate_mean"] = sum(k_gates) / len(k_gates)
+                    k_stds = [d["vayusphere_k_gate_std"] for d in outputs["diagnostics"] if d and "vayusphere_k_gate_std" in d]
+                    if k_stds:
+                        vs_diag["k_gate_std"] = sum(k_stds) / len(k_stds)
+
                 with open(self.metrics_file, "a", encoding="utf-8") as f:
-                    f.write(f"{step},{step_loss:.4f},,,{current_lr:.2e},{avg_ratio:.4f},{time.time() - self.start_time_total:.2f}\n")
+                    vs_str = f"{vs_diag['q_gate_mean']},{vs_diag['q_gate_std']},{vs_diag['k_gate_mean']},{vs_diag['k_gate_std']},{vs_diag['grad_norm_mean']},{vs_diag['grad_norm_max']}"
+                    f.write(f"{step},{step_loss:.4f},,,{current_lr:.2e},{avg_ratio_str},{candidate_mode},{time.time() - self.start_time_total:.2f},{self.config.seed},{vs_str}\n")
 
                 # Reset tracking for next log interval
                 start_time = time.time()
@@ -251,7 +316,9 @@ class Trainer:
             if step % self.config.eval_steps == 0 and self.eval_dataloader is not None:
                 eval_results = self._evaluate()
                 with open(self.metrics_file, "a", encoding="utf-8") as f:
-                    f.write(f"{step},,{eval_results['loss']:.4f},{eval_results['perplexity']:.4f},,,{time.time() - self.start_time_total:.2f}\n")
+                    # Fill with empty for VS diags during eval
+                    vs_empty = ",,,,,"
+                    f.write(f"{step},,{eval_results['loss']:.4f},{eval_results['perplexity']:.4f},,,,{time.time() - self.start_time_total:.2f},{self.config.seed},{vs_empty}\n")
 
             # Checkpointing
             if step % self.config.save_steps == 0:
@@ -271,6 +338,9 @@ class Trainer:
         Runs the evaluation loop.
         """
         logger.info(f"Running evaluation at step {self.global_step}...")
+
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
 
         eval_results = evaluate_perplexity(
             model=self.model,

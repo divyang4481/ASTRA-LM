@@ -3,6 +3,8 @@ import logging
 import torch
 import os
 import time
+import datetime
+import gc
 import pandas as pd
 from astra_lm.model.config import ModelConfig
 from astra_lm.model.decoder import DecoderForCausalLM
@@ -14,6 +16,7 @@ from astra_lm.data.dataset import PretokenizedDataset
 from astra_lm.data.collator import CausalLMCollator
 from torch.utils.data import DataLoader
 from astra_lm.utils import load_config_from_yaml
+from astra_lm.utils.seed import set_seed
 
 def run_experiment(
     name,
@@ -24,7 +27,9 @@ def run_experiment(
     teacher_config=None,
     alpha=0.5,
     temperature=2.0,
-    teacher_dtype="8bit"
+    teacher_dtype="8bit",
+    output_dir=None,
+    base_state_dict=None
 ):
     logging.info(f"--- Starting Experiment: {name} ---")
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -32,10 +37,34 @@ def run_experiment(
     m_cfg = load_config_from_yaml(ModelConfig, model_config_path)
     t_cfg = load_config_from_yaml(TrainConfig, train_config_path)
 
-    t_cfg.output_dir = os.path.join("experiments", name)
+    # Set seed in train config
+    if hasattr(args, "seed"):
+        t_cfg.seed = args.seed
+
+    if output_dir:
+        t_cfg.output_dir = output_dir
+    else:
+        t_cfg.output_dir = os.path.join("experiments", name)
+
     os.makedirs(t_cfg.output_dir, exist_ok=True)
 
+    # SEEDING: Set seed before model creation for reproducibility
+    set_seed(t_cfg.seed)
+
+    # Fair initialization: Create model and load state dict if provided
     model = DecoderForCausalLM(m_cfg)
+
+    if base_state_dict:
+        logging.info(f"Loading baseline state dict into {name} for fair comparison")
+        missing, unexpected = model.load_state_dict(base_state_dict, strict=False)
+        if unexpected:
+            logging.warning(f"Unexpected keys when loading baseline into {name}: {unexpected}")
+
+        # Verify that only vayusphere centroids are missing
+        vs_keys = [k for k in missing if "vayusphere" in k or "centroids" in k]
+        other_keys = [k for k in missing if k not in vs_keys]
+        if other_keys:
+            logging.warning(f"Non-VayuSphere keys missing in {name}: {other_keys}")
 
     train_path = os.path.join(data_dir, "train.npy")
     val_path = os.path.join(data_dir, "val.npy")
@@ -46,7 +75,9 @@ def run_experiment(
     eval_dataset = PretokenizedDataset(val_path, seq_len=m_cfg.max_seq_len)
 
     collator = CausalLMCollator()
-    train_dl = DataLoader(train_dataset, batch_size=t_cfg.per_device_train_batch_size, shuffle=True, collate_fn=collator)
+    g = torch.Generator()
+    g.manual_seed(t_cfg.seed)
+    train_dl = DataLoader(train_dataset, batch_size=t_cfg.per_device_train_batch_size, shuffle=True, collate_fn=collator, generator=g)
     eval_dl = DataLoader(eval_dataset, batch_size=t_cfg.per_device_eval_batch_size, shuffle=False, collate_fn=collator)
 
     if is_kd:
@@ -70,8 +101,12 @@ def run_experiment(
             device=device
         )
 
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
     start_time = time.time()
     trainer.train()
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
     total_time = time.time() - start_time
 
     # Get peak memory
@@ -94,7 +129,8 @@ def run_experiment(
         "params": params,
         "peak_mem_mb": peak_mem,
         "total_time_sec": total_time,
-        "tokens_per_sec": (t_cfg.max_steps * t_cfg.per_device_train_batch_size * m_cfg.max_seq_len) / total_time
+        "tokens_per_sec": (t_cfg.max_steps * t_cfg.per_device_train_batch_size * m_cfg.max_seq_len) / total_time,
+        "model": model # Return model to get state dict for baseline
     }
 
 def main():
@@ -103,33 +139,63 @@ def main():
     parser.add_argument("--train_config", type=str, required=True)
     parser.add_argument("--kd", action="store_true")
     parser.add_argument("--teacher", type=str, default="gpt2")
+    parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO)
 
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_name = f"{timestamp}_seed{args.seed}"
+    run_dir = os.path.join("outputs", "compare_gpt_vs_vayusphere", run_name)
+    os.makedirs(run_dir, exist_ok=True)
+
     results = []
 
     # 1. Baseline GPT
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.reset_peak_memory_stats()
+
+    baseline_output_dir = os.path.join(run_dir, "baseline")
     res_gpt = run_experiment(
         "gpt_baseline",
         "configs/model/gpt_nano_6gb.yaml",
         args.train_config,
         args.data_dir,
         is_kd=args.kd,
-        teacher_config=args.teacher
+        teacher_config=args.teacher,
+        output_dir=baseline_output_dir
     )
+
+    # Get baseline state dict for fair initialization
+    baseline_state_dict = res_gpt["model"].state_dict()
+    # Clean up baseline
+    model_base = res_gpt.pop("model")
     results.append(res_gpt)
 
+    del model_base
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.reset_peak_memory_stats()
+
     # 2. VayuSphere GPT
+    vs_output_dir = os.path.join(run_dir, "vayusphere")
     res_vs = run_experiment(
         "vayusphere_gpt",
         "configs/model/vayusphere_gpt_nano_6gb.yaml",
         args.train_config,
         args.data_dir,
         is_kd=args.kd,
-        teacher_config=args.teacher
+        teacher_config=args.teacher,
+        output_dir=vs_output_dir,
+        base_state_dict=baseline_state_dict
     )
+    model_vs = res_vs.pop("model")
     results.append(res_vs)
+
+    del model_vs
+    gc.collect()
 
     # Report
     print("\n" + "="*50)

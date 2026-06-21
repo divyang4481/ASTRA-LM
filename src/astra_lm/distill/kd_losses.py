@@ -25,6 +25,9 @@ def kl_topk_distillation_loss(
     """
     KL divergence loss on top-k teacher logits for VRAM efficiency.
     teacher_topk_values are the actual top-k logits (or probabilities).
+
+    NOTE: This is a memory-saving approximation and is NOT mathematically equivalent
+    to full-vocab KD, although it often performs similarly in practice.
     """
     # Gather student logits at teacher top-k positions
     # student_logits: [batch_size, seq_len, vocab_size]

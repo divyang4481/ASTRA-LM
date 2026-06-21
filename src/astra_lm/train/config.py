@@ -23,15 +23,17 @@ class TrainConfig:
     eval_steps: int = 100
     save_steps: int = 500
     logging_steps: int = 10
-    max_eval_batches: int = 50
+    max_eval_batches: int = 100
 
     # Directories
     output_dir: str = "outputs"
+    seed: int = 42
 
     # Training optimizations
     mixed_precision: str = "auto"  # auto, fp16, bf16, none
     gradient_accumulation_steps: int = 1
     max_grad_norm: float = 1.0
+    overwrite_output_dir: bool = False
 
 @dataclass
 class DataConfig:
