@@ -1,6 +1,6 @@
 # ASTRA-LM: Adaptive Spherical Transformer for Reasoning Architecture
 
-ASTRA-LM is a resource-efficient, low-VRAM decoder transformer architecture designed for running and training LLMs on consumer-grade hardware (such as 6 GB NVIDIA laptop GPUs) and free cloud accelerators (like Kaggle or Colab). 
+ASTRA-LM is a resource-efficient, low-VRAM decoder transformer architecture designed for running and training LLMs on consumer-grade hardware (such as 6 GB NVIDIA laptop GPUs) and free cloud accelerators (like Kaggle or Colab).
 
 It is built upon a standard GPT-style baseline (RoPE, RMSNorm, SwiGLU, GQA) and introduces **VayuSphere**, a lightweight angular adapter that uses hyperspherical centroids to modulate query and key directions before attention.
 
@@ -13,19 +13,20 @@ Input Tokens  -->  Embeddings + RoPE  -->  N × DHRUVA Blocks  -->  RMSNorm  -->
 ```
 
 Inside each **DHRUVA Block**, the forward flow is highly modular and config-gated:
+
 1. **RMSNorm (Pre-Norm)**
 2. **Standard Attention (SDPA)**
-   * Uses PyTorch `scaled_dot_product_attention` for maximum performance (Flash Attention).
-   * Supports Multi-Head Attention (MHA) or Grouped-Query Attention (GQA).
-   * **VayuSphere Adapter** (Optional): A lightweight angular gate that projects Q/K onto a hypersphere and applies a learnable residual scale based on similarity to learned centroids.
+   - Uses PyTorch `scaled_dot_product_attention` for maximum performance (Flash Attention).
+   - Supports Multi-Head Attention (MHA) or Grouped-Query Attention (GQA).
+   - **VayuSphere Adapter** (Optional): A lightweight angular gate that projects Q/K onto a hypersphere and applies a learnable residual scale based on similarity to learned centroids.
 3. **CHAKRA Attention** (Legacy Research Option)
-   * **Local sliding window** (always included to preserve syntactic structure)
-   * **Hyperspherical Routing** (projects queries and keys onto an $N$-dimensional sphere and groups them into angular buckets)
-   * **Exact QK Softmax** computed only on selected candidate buckets
-3. **AKASHA Memory Manager** (optional gated mixing of local attention with distant anchor memories)
-4. **SURYA Mixer** (periodic FFT/DCT global sequence mixing to prevent sparse attention signal loss - *disabled by default*)
-5. **INDRA Phase Layer** (lightweight real-valued phase/magnitude gate on hidden states - *disabled by default*)
-6. **SwiGLU MLP / FOCK-FFN** (standard SwiGLU FFN or compact Chebyshev basis FFN - *disabled by default*)
+   - **Local sliding window** (always included to preserve syntactic structure)
+   - **Hyperspherical Routing** (projects queries and keys onto an $N$-dimensional sphere and groups them into angular buckets)
+   - **Exact QK Softmax** computed only on selected candidate buckets
+4. **AKASHA Memory Manager** (optional gated mixing of local attention with distant anchor memories)
+5. **SURYA Mixer** (periodic FFT/DCT global sequence mixing to prevent sparse attention signal loss - _disabled by default_)
+6. **INDRA Phase Layer** (lightweight real-valued phase/magnitude gate on hidden states - _disabled by default_)
+7. **SwiGLU MLP / FOCK-FFN** (standard SwiGLU FFN or compact Chebyshev basis FFN - _disabled by default_)
 
 ---
 
@@ -98,24 +99,30 @@ astra-lm/
 ASTRA-LM uses standard python package definitions, making it compatible with `uv`, standard `pip` or virtualenvs, and `conda` environments.
 
 ### CUDA Support Verification (Windows/Linux)
+
 Before training, verify your PyTorch installation has CUDA support:
+
 ```powershell
 python -c "import torch; print('torch=', torch.__version__); print('cuda build=', torch.version.cuda); print('cuda available=', torch.cuda.is_available()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'NO CUDA')"
 ```
 
 If `cuda available` is `False`, you may need to reinstall PyTorch with the correct CUDA wheel index:
+
 ```powershell
 # Example for CUDA 12.1
 pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121 --force-reinstall
 ```
 
 ### Using `uv` (Fastest)
+
 If you have `uv` installed, setting up the environment takes seconds:
+
 ```powershell
 uv sync
 ```
 
 ### Using standard `pip` + virtualenv
+
 ```powershell
 # Create virtual environment named astra-lm-env
 python -m venv astra-lm-env
@@ -130,6 +137,7 @@ pip install -e .
 ```
 
 ### Using Conda
+
 ```powershell
 # Create a conda environment named astra-lm-env
 conda create -n astra-lm-env python=3.11 -y
@@ -147,23 +155,29 @@ pip install -e .
 ## Usage Guide
 
 ### 1. Verification (Smoke Test)
+
 Run a quick, 2-layer forward pass to verify embedding shapes, logits, and CHAKRA candidate routing diagnostics on your system:
+
 ```powershell
 $env:PYTHONPATH="src"
 python scripts/smoke_forward.py
 ```
 
 ### 2. Pretraining Sanity Check (Smoke Training)
+
 To make sure the training loop, checkpointing, and optimizers run without error. **Note:** `smoke.yaml` uses synthetic data by default.
+
 ```powershell
 $env:PYTHONPATH="src"
 python scripts/train.py --model_config configs/model/gpt_nano_6gb.yaml --train_config configs/train/smoke.yaml
 ```
 
 ### 3. Serious Pretraining on Real Data
+
 For real training, you must first prepare the data and then point the trainer to it using `--data_dir`.
 
 #### Data Preparation (FineWeb-Edu)
+
 ```powershell
 $env:PYTHONPATH="src"
 python scripts/prepare_gpt2_pretrain_data.py `
@@ -176,6 +190,7 @@ python scripts/prepare_gpt2_pretrain_data.py `
 ```
 
 #### Laptop 6GB Training (10M tokens)
+
 ```powershell
 # Standard GPT Baseline
 python scripts/train.py `
@@ -193,24 +208,30 @@ python scripts/train.py `
 ```
 
 ### 4. Baseline vs VayuSphere Comparison
+
 Fairly compare standard GPT against the VayuSphere-enabled model:
+
 ```powershell
 python scripts/compare_gpt_vs_vayusphere.py `
   --train_config configs/train/laptop_6gb_10m.yaml `
-  --data_dir data/fineweb_edu_gpt2_10m
+  --data_dir data/fineweb_edu_gpt2_10m  --seed 42
 ```
 
 ### 5. Text Generation
+
 Generate text using a trained model checkpoint (runs a logits-sampling sequence builder):
+
 ```powershell
 $env:PYTHONPATH="src"
 python scripts/generate.py --checkpoint outputs/smoke/checkpoint-10.pt --model_config configs/model/astra_nano_6gb.yaml --prompt "Deep learning is"
 ```
 
 ### 6. Knowledge Distillation (DRONA-KD)
+
 Train a student DHRUVA model under the guidance of a teacher model. You can load a local model config and checkpoint, or dynamically fetch a pretrained teacher directly from Hugging Face (such as `gpt2-medium` or `gpt2`):
 
 #### Laptop KD Training (using Hugging Face Teacher):
+
 ```powershell
 $env:PYTHONPATH="src"
 python scripts/train_kd.py `
@@ -224,8 +245,9 @@ python scripts/train_kd.py `
 ```
 
 #### Dynamic Context Capping & Low VRAM Long Contexts:
-* **Context Capping in KD**: Hugging Face teacher models have fixed maximum position embeddings (e.g., `1024` tokens for `gpt2-medium`). The distillation script dynamically queries the teacher config and caps the training sequence length to `min(student_max_seq_len, teacher_max_seq_len)` to avoid out-of-bound indexing crashes.
-* **Low VRAM Long-Context Pretraining**: When pretraining a student model *directly* (without the teacher model in memory, using `scripts/train.py`), you can train with context windows as large as **`8192`** on a 6 GB VRAM laptop. This is enabled by **CHAKRA Attention Routing**, which compresses key-value cache length by over **90%** (routing query tokens only to a tiny fraction of total key-value buckets), scaling memory consumption near-linearly instead of quadratically with sequence length.
+
+- **Context Capping in KD**: Hugging Face teacher models have fixed maximum position embeddings (e.g., `1024` tokens for `gpt2-medium`). The distillation script dynamically queries the teacher config and caps the training sequence length to `min(student_max_seq_len, teacher_max_seq_len)` to avoid out-of-bound indexing crashes.
+- **Low VRAM Long-Context Pretraining**: When pretraining a student model _directly_ (without the teacher model in memory, using `scripts/train.py`), you can train with context windows as large as **`8192`** on a 6 GB VRAM laptop. This is enabled by **CHAKRA Attention Routing**, which compresses key-value cache length by over **90%** (routing query tokens only to a tiny fraction of total key-value buckets), scaling memory consumption near-linearly instead of quadratically with sequence length.
 
 ---
 
@@ -236,13 +258,14 @@ Because ASTRA-LM does not depend on custom C++/CUDA compile steps and uses nativ
 We have created a ready-to-run Jupyter notebook: [astra_lm_cloud_training.ipynb](file:///c:/workspace/AI/ASTRA-LM/notebooks/astra_lm_cloud_training.ipynb).
 
 ### Setup and Upload Guide:
+
 1. **Push your code to GitHub**: Since you are pair-programming in a Git repository, commit and push your latest changes (`git add .`, `git commit -m "Updates"`, `git push`).
 2. **Open Google Colab or Kaggle**:
-   * **Google Colab**: Go to [colab.research.google.com](https://colab.research.google.com/) -> Select **Upload** -> Drag and drop the `notebooks/astra_lm_cloud_training.ipynb` file from your local computer.
-   * **Kaggle**: Go to [kaggle.com/code](https://www.kaggle.com/code) -> Click **New Notebook** -> Select **File** -> **Import Notebook** -> Upload `notebooks/astra_lm_cloud_training.ipynb`.
+   - **Google Colab**: Go to [colab.research.google.com](https://colab.research.google.com/) -> Select **Upload** -> Drag and drop the `notebooks/astra_lm_cloud_training.ipynb` file from your local computer.
+   - **Kaggle**: Go to [kaggle.com/code](https://www.kaggle.com/code) -> Click **New Notebook** -> Select **File** -> **Import Notebook** -> Upload `notebooks/astra_lm_cloud_training.ipynb`.
 3. **Select GPU Accelerator**:
-   * **Colab**: Click **Runtime** -> **Change runtime type** -> Select **T4 GPU** or higher.
-   * **Kaggle**: In the right sidebar panel, under **Accelerator**, select **GPU T4 x2** or **GPU P100**.
+   - **Colab**: Click **Runtime** -> **Change runtime type** -> Select **T4 GPU** or higher.
+   - **Kaggle**: In the right sidebar panel, under **Accelerator**, select **GPU T4 x2** or **GPU P100**.
 4. **Execute**: Run the notebook cells sequentially. The first cell will clone your repo and install the package dependencies:
    ```bash
    !git clone https://github.com/divyang4481/ASTRA-LM.git
@@ -256,15 +279,18 @@ We have created a ready-to-run Jupyter notebook: [astra_lm_cloud_training.ipynb]
 ## Running Tests
 
 Verify the complete mathematical and architectural suite:
+
 ```powershell
 $env:PYTHONPATH="src"
 pytest
 ```
+
 Tests assert:
-* **Shapes**: Correct sizes of GQA, CHAKRA, and embeddings.
-* **Causal mask structure**: Attention masks are strictly lower-triangular.
-* **No future leakage**: Gradients for future positions are exactly zero.
-* **Chakra routing logic**: Neighbors and exact matches include/exclude correct keys.
-* **Local window preservation**: Local window tokens are never pruned by sphere matching.
-* **Scale-invariance**: Two inputs pointing in the same direction but with different magnitudes project to the same bucket.
-* **Checkpoint Resume**: Loaded checkpoints yield identical logits.
+
+- **Shapes**: Correct sizes of GQA, CHAKRA, and embeddings.
+- **Causal mask structure**: Attention masks are strictly lower-triangular.
+- **No future leakage**: Gradients for future positions are exactly zero.
+- **Chakra routing logic**: Neighbors and exact matches include/exclude correct keys.
+- **Local window preservation**: Local window tokens are never pruned by sphere matching.
+- **Scale-invariance**: Two inputs pointing in the same direction but with different magnitudes project to the same bucket.
+- **Checkpoint Resume**: Loaded checkpoints yield identical logits.
