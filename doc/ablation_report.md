@@ -61,3 +61,22 @@ Comparison of assignment confidence and margin metrics:
 4. **VRAM and Throughput Trade-offs**:
    - VayuSphere scaling adapters add very minimal peak memory (only **~12 MB** additional VRAM allocated) and add about **6,000 parameters**, representing a highly lightweight architecture modification.
    - However, the current unoptimized PyTorch implementation of centroid comparisons does reduce throughput (from **17,810 Tok/s** on standard baseline down to **9,790 Tok/s** in `D_vs_scale_topk8`). Future production deployment would benefit from a fused CUDA kernel for centroid matching.
+
+---
+
+## Scientific Control Test: Frozen vs. Trained Centroids
+
+To determine whether VayuSphere's eval loss improvements are driven by learned semantic routing or general content-dependent projection/regularization, we ran a scientific control test comparing the baseline, learned temperature, trained VayuSphere (`D_vs_scale_topk8`), and a control variant with frozen random centroids (`D_frozen_random_centroids_topk8_prerope`):
+
+| Variant | Final Eval Loss | Delta vs. Baseline | Perplexity | Peak VRAM (MB) | Throughput (Tok/s) |
+|---|---|---|---|---|---|
+| **A_baseline** | 6.2830 | +0.0000 | 535.3856 | 642.37 | 17,568.10 |
+| **B_learned_temp** | 6.2783 | -0.0047 | 532.8792 | 645.39 | 17,041.56 |
+| **D_vs_scale_topk8** (Trained) | 6.2779 | -0.0051 | 532.6954 | 654.21 | 10,979.62 |
+| **D_frozen_random** (Control) | 6.2789 | -0.0041 | 533.1822 | 652.26 | 11,151.59 |
+
+### Key Findings:
+1. **80% of Gains are Structural/Regularization**: The frozen random centroid control achieved an eval loss improvement of **-0.0041** over the baseline. This indicates that the vast majority (80%) of VayuSphere's performance benefit comes from the *structural projection and angular gating mechanism* acting as a form of content-dependent regularization, rather than semantic routing.
+2. **Semantic Learning Contribution**: Learning the centroids via backpropagation contributes an additional **-0.0010** improvement (reducing loss from `6.2789` to `6.2779`).
+3. **Resource Efficiency of Frozen Centroids**: The frozen random control variant runs slightly faster (**11,151 Tok/s** vs. **10,979 Tok/s**) and saves **~2 MB** of peak VRAM because it bypasses gradient computation and optimizer tracking for the centroid tensors.
+

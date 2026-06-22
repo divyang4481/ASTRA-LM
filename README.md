@@ -270,12 +270,17 @@ python scripts/ablate_v2.py `
 
 Available ablation modes (`--mode`):
 
-- **`control_test`**: Runs the critical scientific control variant `D_frozen_random_centroids_topk8_prerope` alongside the baseline, learned temperature, and trained VayuSphere D variant. (Centroids are kept frozen and initialized randomly to test if gains are due to content-dependent perturbations/regularization rather than learned semantic routing).
+- **`control_test`**: Runs the scientific control variant `D_frozen_random_centroids_topk8_prerope` (pre-RoPE) alongside the baseline, learned temperature, and trained VayuSphere D variant. (Centroids are kept frozen and initialized randomly to test if gains are due to content-dependent perturbations/regularization rather than learned semantic routing).
+- **`control_test_postrope`**: Runs the post-RoPE scientific control variant `scale_topk8_postrope_frozen_random` alongside the baseline, learned temperature, and trained VayuSphere post-RoPE variant.
 - **`confound_sweep`**: A clean 2x2 grid checking pre- vs. post-RoPE stages against all-centroids vs. top-k8 centroids to isolate which factor drives the performance gain.
-- **`alpha_sweep`**: Sweeps `alpha = [0.05, 0.10, 0.20, 0.40]` on the D pipeline to inspect gate scaling limits.
-- **`target_sweep`**: Compares targeting `q` vs. `k` vs. `qk` to see if scaling both compounds noise.
+- **`alpha_sweep`**: Sweeps `alpha = [0.05, 0.10, 0.20, 0.40]` on the selected pipeline (via `--pipeline`) to inspect gate scaling limits.
+- **`target_sweep`**: Compares targeting `q` vs. `k` vs. `qk` on the selected pipeline (via `--pipeline`) to see if scaling both compounds noise.
 - **`multi_seed`**: Performs paired training runs across seeds `[42, 123, 777]` for baseline, learned temp, D, and E variants. Aggregates results into `aggregate_mean_std.csv` detailing win counts and mean/std metrics.
-- **`standard`**: Runs baseline, learned temp, C, D, and E variants (pauses F tangent+scale).
+- **`standard`**: Runs baseline, learned temp, C, D, and E variants.
+
+You can configure which VayuSphere pipeline stage is used for the alpha and target sweeps using the `--pipeline` option:
+- `--pipeline postrope_topk8` (Default): Sweeps are performed on the post-RoPE top-k=8 configuration.
+- `--pipeline prerope_topk8`: Sweeps are performed on the pre-RoPE top-k=8 configuration.
 
 You can load and visualize the results (including aggregated multi-seed tables and re-evaluation curves) using the updated `notebooks/analyze_experiments.ipynb` notebook.
 
