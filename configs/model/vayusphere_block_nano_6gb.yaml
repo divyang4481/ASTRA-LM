@@ -17,16 +17,16 @@ activation: silu
 
 # Experimental: VayuSphere Block Attention
 attention_impl: vayusphere_block
-vayu_block_size: 64
-vayu_top_m_blocks: 2
-vayu_force_local_blocks: true
-vayu_route_policy: current_prev_semantic
-vayu_pair_scorer: linear
-vayu_delta_scale_init: 0.001
-vayu_temperature_init: 1.0
-vayu_use_triton_eval: true
-vayu_triton_min_seq_len: 512
-vayu_log_route_stats: true
+vayu_block_size: 64             # (Experimental) Size of token blocks for routing
+vayu_top_m_blocks: 2            # (Experimental) Number of key blocks to route each query block to
+vayu_force_local_blocks: true   # (Experimental) Always include local (current/prev) blocks
+vayu_route_policy: current_prev_semantic # (Experimental)
+vayu_pair_scorer: linear        # (Experimental) 'cosine', 'linear', 'mlp', or 'rbfkan'
+vayu_delta_scale_init: 0.001    # (Experimental)
+vayu_temperature_init: 1.0     # (Experimental)
+vayu_use_triton_eval: true      # (Experimental) Enable Triton fused kernel for evaluation/inference
+vayu_triton_min_seq_len: 512    # (Experimental) Min sequence length to trigger Triton path
+vayu_log_route_stats: true      # (Experimental)
 
 ffn_type: swiglu
 use_rope: true

@@ -411,9 +411,13 @@ For detailed instructions on running smoke tests, benchmarks, and KD training wi
 ### Known Limitations (v0.1)
 
 - **MHA Only**: Only Multi-Head Attention (n_heads == n_kv_heads) is validated. GQA support is planned for v0.2.
-- **Triton Forward-Only**: The Triton fused kernel is currently implemented for the **forward pass only**. Training with Triton enabled will automatically fall back to the PyTorch path for the backward pass.
-- **Scorer Support**: Triton supports only `cosine` and `linear` scorers. `mlp` and `rbfkan` scorers use the PyTorch reference implementation.
-- **KV-Cache**: Optimized KV-cache support for autoregressive generation is not yet implemented. Generation will work but will recompute the full sequence.
+- **Triton Fused Path**:
+  - Supports only `cosine` and `linear` scorers.
+  - Implemented for **forward pass only**. During training, it will cleanly fall back to the PyTorch reference path for the backward pass.
+  - Requires sequence length to be divisible by `vayu_block_size` and at least `vayu_triton_min_seq_len` (default 512).
+- **GQA**: Not yet validated with VayuSphere block routing.
+- **KV-Cache**: Optimized KV-cache support for autoregressive generation is not yet implemented. Generation will work but will recompute the full sequence. Set `use_cache=False` for now.
+- **Experimental Scorers**: `rbfkan` and `mlp` scorers are experimental, slower than `linear`, and use the PyTorch reference implementation only.
 - **Dtype**: Triton kernel is optimized for `fp16` and `bf16`.
 
 ### Benchmark Results (CPU Example)

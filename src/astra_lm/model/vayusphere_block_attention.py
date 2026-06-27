@@ -64,11 +64,15 @@ class VayuSphereBlockAttention(nn.Module):
         attention_mask: Optional[torch.Tensor] = None,
         use_triton: bool = False,
         return_stats: bool = False,
-        past_key_value: Optional[Any] = None, # Not supported yet
+        past_key_value: Optional[Any] = None,
+        use_cache: bool = False,
     ) -> Tuple[torch.Tensor, Dict[str, Any]]:
 
-        if past_key_value is not None:
-             raise NotImplementedError("VayuSphereBlockAttention v0.1 does not support optimized KV-cache generation yet.")
+        if past_key_value is not None or use_cache:
+             raise NotImplementedError(
+                 "VayuSphereBlockAttention v0.1 does not support optimized KV-cache generation yet. "
+                 "Set use_cache=False in model config or generation call."
+             )
 
         batch_size, seq_len, _ = hidden_states.shape
 
@@ -90,13 +94,13 @@ class VayuSphereBlockAttention(nn.Module):
         # Triton Fallback Check
         if use_triton:
             if self.training:
-                # v0.1 Triton is forward-only
+                # v0.1 Triton is forward-only. For training, we must use PyTorch path for backward support.
                 use_triton = False
             elif not torch.cuda.is_available():
                 use_triton = False
             elif self.config.vayu_pair_scorer not in ["cosine", "linear"]:
                 if not self._triton_warned:
-                    logger.warning(f"VayuSphere Triton v0.1 supports only cosine and linear scorers. Falling back to PyTorch path for scorer={self.config.vayu_pair_scorer}.")
+                    logger.warning(f"VayuSphere Triton v0.1 supports only 'cosine' and 'linear' scorers. Falling back to PyTorch path for scorer='{self.config.vayu_pair_scorer}'.")
                     self._triton_warned = True
                 use_triton = False
             elif pad_len > 0:
@@ -106,6 +110,8 @@ class VayuSphereBlockAttention(nn.Module):
                 use_triton = False
             elif curr_seq_len < self.block_size:
                 use_triton = False
+            elif hidden_states.device.type != "cuda":
+                use_triton = False
 
         # 2. QKV Projection
         q = self.q_proj(hidden_states).view(batch_size, curr_seq_len, self.n_heads, self.head_dim).transpose(1, 2)
@@ -113,15 +119,14 @@ class VayuSphereBlockAttention(nn.Module):
         v = self.v_proj(hidden_states).view(batch_size, curr_seq_len, self.n_kv_heads, self.head_dim).transpose(1, 2)
 
         # 3. Apply RoPE
-        if pad_len > 0:
-             if cos.size(2) < curr_seq_len:
-                 # Normally rope frequencies are pre-calculated for max_seq_len
-                 # but for safety in tests we pad them
-                 cos = F.pad(cos, (0, 0, 0, curr_seq_len - cos.size(2)), value=1.0)
-                 sin = F.pad(sin, (0, 0, 0, curr_seq_len - sin.size(2)), value=0.0)
-             else:
-                 cos = cos[:, :, :curr_seq_len, :]
-                 sin = sin[:, :, :curr_seq_len, :]
+        if cos.size(2) < curr_seq_len:
+            # Normally rope frequencies are pre-calculated for max_seq_len
+            # but for safety in tests or edge cases we pad them
+            cos = F.pad(cos, (0, 0, 0, curr_seq_len - cos.size(2)), value=1.0)
+            sin = F.pad(sin, (0, 0, 0, curr_seq_len - sin.size(2)), value=0.0)
+        else:
+            cos = cos[:, :, :curr_seq_len, :]
+            sin = sin[:, :, :curr_seq_len, :]
 
         q, k = apply_rotary_pos_emb(q, k, cos, sin)
 
@@ -137,16 +142,18 @@ class VayuSphereBlockAttention(nn.Module):
         if use_triton:
             try:
                 from .triton_vayusphere_block_attention import triton_vayusphere_block_attention_forward
-                q_norm = F.normalize(q, p=2, dim=-1)
-                k_norm = F.normalize(k, p=2, dim=-1)
-                q_mag = torch.norm(q, p=2, dim=-1, keepdim=True)
-                k_mag = torch.norm(k, p=2, dim=-1, keepdim=True)
+                # Triton kernel v0.1 assumes contiguous layout for performance and simplicity
+                q_norm = F.normalize(q, p=2, dim=-1).contiguous()
+                k_norm = F.normalize(k, p=2, dim=-1).contiguous()
+                v = v.contiguous()
+                q_mag = torch.norm(q, p=2, dim=-1, keepdim=True).contiguous()
+                k_mag = torch.norm(k, p=2, dim=-1, keepdim=True).contiguous()
 
                 attn_out = triton_vayusphere_block_attention_forward(
                     q_norm=q_norm,
                     k_norm=k_norm,
                     v=v,
-                    route_idx=route_idx,
+                    route_idx=route_idx.contiguous(),
                     q_norm_mag=q_mag,
                     k_norm_mag=k_mag,
                     linear_weights=self.scorer,
