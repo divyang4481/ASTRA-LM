@@ -1,0 +1,33 @@
+# VayuSphere-Fused Block Attention Nano (Targets 6GB GPU)
+# Parameters: ~34M
+# Optimized for: 6GB VRAM, context 512-2048
+
+vocab_size: 50257
+max_seq_len: 512
+d_model: 384
+n_layers: 6
+n_heads: 6
+n_kv_heads: 6
+mlp_ratio: 4.0
+dropout: 0.0
+norm_type: rmsnorm
+bias: false
+tie_word_embeddings: true
+activation: silu
+
+# Experimental: VayuSphere Block Attention
+attention_impl: vayusphere_block
+vayu_block_size: 64
+vayu_top_m_blocks: 2
+vayu_force_local_blocks: true
+vayu_route_policy: current_prev_semantic
+vayu_pair_scorer: linear
+vayu_delta_scale_init: 0.001
+vayu_temperature_init: 1.0
+vayu_use_triton_eval: true
+vayu_triton_min_seq_len: 512
+vayu_log_route_stats: true
+
+ffn_type: swiglu
+use_rope: true
+# gradient_checkpointing: true # Enable in train config if needed

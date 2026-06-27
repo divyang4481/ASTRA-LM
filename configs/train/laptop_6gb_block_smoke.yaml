@@ -1,0 +1,15 @@
+learning_rate: 3.0e-4
+min_lr_ratio: 0.1
+weight_decay: 0.1
+max_steps: 10
+warmup_steps: 2
+eval_steps: 10
+save_steps: 10
+logging_steps: 1
+per_device_train_batch_size: 1
+gradient_accumulation_steps: 1
+mixed_precision: none
+max_grad_norm: 1.0
+output_dir: outputs/vayusphere_block_smoke
+seed: 42
+overwrite_output_dir: true

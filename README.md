@@ -37,6 +37,7 @@ astra-lm/
 ├── configs/                  # YAML configurations
 │   ├── model/
 │   │   ├── astra_nano_6gb.yaml       # Targets 6GB GPU (~20M-60M params)
+│   │   ├── vayusphere_block_nano_6gb.yaml # VayuSphere block attention variant
 │   │   └── prism_gqa_baseline.yaml    # Control baseline model
 │   └── train/
 │       └── smoke.yaml                # Quick pretraining sanity check
@@ -369,3 +370,60 @@ Tests assert:
 - **Local window preservation**: Local window tokens are never pruned by sphere matching.
 - **Scale-invariance**: Two inputs pointing in the same direction but with different magnitudes project to the same bucket.
 - **Checkpoint Resume**: Loaded checkpoints yield identical logits.
+
+---
+
+## VayuSphere Block Attention v0.1 (Experimental)
+
+ASTRA-LM now includes an experimental block-sparse attention implementation called **VayuSphere-Fused Block Attention**.
+
+### Features
+- **Block-Sparse Routing**: Queries are routed to top-m key blocks based on hyperspherical centroid similarity.
+- **Learned Pair Scoring**: Enhances standard cosine similarity with learned features (relative distance, norms) via linear, MLP, or RBF-KAN scorers.
+- **Triton Acceleration**: Fused forward kernel for fast inference and evaluation.
+- **Memory Efficient KD**: Optimized for 6GB VRAM GPUs with top-k logit compression and CPU teacher support.
+
+### Usage
+To use the block attention, set `attention_impl: vayusphere_block` in your model config. For Triton-accelerated evaluation, use `vayusphere_block_triton_eval`.
+
+**Smoke Test:**
+```bash
+python scripts/smoke_vayusphere_block.py --model_config configs/model/vayusphere_block_nano_6gb.yaml --device cuda
+```
+
+**Benchmark:**
+```bash
+python scripts/benchmark_vayusphere_block.py --model_config configs/model/vayusphere_block_nano_6gb.yaml --device cuda
+```
+
+**6GB KD Training:**
+```bash
+python scripts/train_kd.py \
+  --model_config configs/model/vayusphere_block_nano_6gb.yaml \
+  --teacher_config distilgpt2 \
+  --train_config configs/train/laptop_6gb_block_kd.yaml \
+  --teacher_device auto \
+  --topk_logits 128
+```
+
+For detailed instructions on running smoke tests, benchmarks, and KD training with Triton, see [VAYUSPHERE_BLOCK_GUIDE.md](doc/VAYUSPHERE_BLOCK_GUIDE.md).
+
+### Known Limitations (v0.1)
+
+- **MHA Only**: Only Multi-Head Attention (n_heads == n_kv_heads) is validated. GQA support is planned for v0.2.
+- **Triton Forward-Only**: The Triton fused kernel is currently implemented for the **forward pass only**. Training with Triton enabled will automatically fall back to the PyTorch path for the backward pass.
+- **Scorer Support**: Triton supports only `cosine` and `linear` scorers. `mlp` and `rbfkan` scorers use the PyTorch reference implementation.
+- **KV-Cache**: Optimized KV-cache support for autoregressive generation is not yet implemented. Generation will work but will recompute the full sequence.
+- **Dtype**: Triton kernel is optimized for `fp16` and `bf16`.
+
+### Benchmark Results (CPU Example)
+
+*Measured on standard cloud CPU instance, seq_len=512, block_size=64, top_m=2*
+
+| Implementation | Mode | Latency | Throughput | Params |
+| :--- | :--- | :--- | :--- | :--- |
+| SDPA Baseline | Eval | ~220 ms | ~2300 tok/s | 34.0M |
+| VayuBlock PyTorch | Eval | ~280 ms | ~1800 tok/s | 34.0M |
+| VayuBlock PyTorch | Train | ~850 ms | ~600 tok/s | 34.0M |
+
+*Note: Triton speedups are significant on CUDA devices at longer sequence lengths (1024+).*

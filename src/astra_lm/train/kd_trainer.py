@@ -25,7 +25,8 @@ class KDTrainer(Trainer):
         eval_dataloader: Optional[DataLoader] = None,
         alpha: float = 0.5,        # Weight for KD loss
         temperature: float = 2.0,  # KD temperature
-        device: str = "cuda" if torch.cuda.is_available() else "cpu"
+        device: str = "cuda" if torch.cuda.is_available() else "cpu",
+        topk_logits: int = 100
     ):
         super().__init__(
             model=student_model,
@@ -54,6 +55,7 @@ class KDTrainer(Trainer):
         log_nvidia_smi()
         self.alpha = alpha
         self.temperature = temperature
+        self.topk_logits = topk_logits
 
     def train(self):
         """
@@ -92,20 +94,25 @@ class KDTrainer(Trainer):
             # Forward pass with AMP
             try:
                 with torch.autocast(device_type=self.device.type, dtype=self.autocast_dtype, enabled=self.use_amp):
-                    # 1. Teacher forward (no grad) - run first to keep its temporary activation memory 
-                    # and large logits tensor out of the student's forward pass activation peak.
+                    # 1. Teacher forward (no grad)
+                    # Support teacher on different device (e.g. CPU)
+                    teacher_input_ids = input_ids.to(next(self.teacher_model.parameters()).device)
+
                     with torch.no_grad():
                         if step == 1:
                             log_cuda_memory("Before teacher forward")
                             log_nvidia_smi()
-                        teacher_outputs = self.teacher_model(input_ids=input_ids)
+                        teacher_outputs = self.teacher_model(input_ids=teacher_input_ids)
                         teacher_logits = teacher_outputs["logits"]
                         
-                        # Restricting to top 100 logit values is mathematically equivalent for KD
-                        # while reducing VRAM memory allocation by 500x.
-                        k = min(100, teacher_logits.size(-1))
+                        # Top-k compression
+                        k = min(self.topk_logits, teacher_logits.size(-1))
                         teacher_topk_values, teacher_topk_indices = torch.topk(teacher_logits, k=k, dim=-1)
                         
+                        # Transfer top-k to student device if needed
+                        teacher_topk_values = teacher_topk_values.to(self.device)
+                        teacher_topk_indices = teacher_topk_indices.to(self.device)
+
                         # Proactively delete the massive full-vocabulary logits tensor to free VRAM
                         del teacher_logits
                         del teacher_outputs

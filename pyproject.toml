@@ -16,6 +16,7 @@ dependencies = [
     "tqdm",
     "pyyaml",
     "datasets",
+    "triton>=2.1.0",
 ]
 
 [project.optional-dependencies]
