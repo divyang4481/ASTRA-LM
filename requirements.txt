@@ -5,6 +5,7 @@ numpy
 tqdm
 pyyaml
 datasets
-triton>=2.1.0
+triton>=2.1.0; sys_platform != "win32"
+triton-windows>=3.0.0; sys_platform == "win32"
 pytest>=8.0.0
 ruff>=0.3.0
