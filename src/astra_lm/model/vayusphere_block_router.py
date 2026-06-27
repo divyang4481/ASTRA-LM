@@ -137,13 +137,15 @@ def build_vayusphere_block_routes(
     # For j > i, scores are -inf.
     # To handle i+1 < top_m, we can replace -inf with a slightly larger but still small value for j=i (self-loop).
 
-    # Ensure current block is always at least reachable
-    for i in range(num_blocks):
-        modified_scores[:, :, i, i] = torch.where(
-            modified_scores[:, :, i, i] == -float('inf'),
-            torch.tensor(100.0, device=q.device), # Should not happen due to causal mask i,i is allowed
-            modified_scores[:, :, i, i]
-        )
+    # Ensure current block is always at least reachable (diagonal)
+    # This replaces the loop for better performance and to avoid multiple small tensor allocations
+    diag_indices = torch.arange(num_blocks, device=q.device)
+    curr_diag_scores = modified_scores[:, :, diag_indices, diag_indices]
+    modified_scores[:, :, diag_indices, diag_indices] = torch.where(
+        curr_diag_scores == -float('inf'),
+        torch.tensor(100.0, device=q.device, dtype=curr_diag_scores.dtype),
+        curr_diag_scores
+    )
 
     # top_m_blocks
     # If num_blocks < top_m_blocks, topk will fail.

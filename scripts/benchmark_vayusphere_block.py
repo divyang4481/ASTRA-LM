@@ -46,6 +46,12 @@ def benchmark(model, input_ids, label="Model", warmups=5, steps=10, device="cuda
 
     mode = "Train" if model.training else "Eval"
     print(f"{label: <35} | {mode: <5} | {avg_time:8.2f} ms | {tokens_per_sec:10.0f} | {peak_mem:8.2f} MB | {params:6.1f}M")
+
+    # Check for backward support
+    if model.training:
+        if "Triton" in label:
+             print(f"  Note: {label} training currently falls back to PyTorch for backward pass.")
+
     return avg_time, peak_mem
 
 def main():
