@@ -6,6 +6,7 @@ from .norms import RMSNorm
 from .attention_gqa import GroupedQueryAttention
 from .chakra_attention import ChakraAttention
 from .attention_sdpa import SDPAGPTAttention
+from .vayusphere_block_attention import VayuSphereBlockAttention
 from .vayusphere_adapter import VayuSphereAdapter
 from .akasha_memory import AkashaMemoryManager
 from .mlp import FeedForward
@@ -26,14 +27,16 @@ class DecoderBlock(nn.Module):
         # Pre-attention normalization and attention path
         self.norm1 = RMSNorm(config.d_model, eps=config.norm_eps)
 
-        if config.attention_type == "sdpa":
+        if config.attention_impl in ["vayusphere_block", "vayusphere_block_triton_eval"]:
+            self.attention = VayuSphereBlockAttention(config)
+        elif config.attention_type == "sdpa":
             self.attention = SDPAGPTAttention(config)
         elif config.attention_type == "chakra" or config.attention_type == "chakra_legacy":
             self.attention = ChakraAttention(config)
         else:
             self.attention = GroupedQueryAttention(config)
 
-        # VayuSphere adapter
+        # VayuSphere adapter (standard adapter, skipped for block attention)
         self.vayusphere = VayuSphereAdapter(config)
 
         # AKASHA memory manager
@@ -79,7 +82,29 @@ class DecoderBlock(nn.Module):
         
         diagnostics = {}
 
-        if self.config.attention_type == "sdpa":
+        if self.config.attention_impl in ["vayusphere_block", "vayusphere_block_triton_eval"]:
+            # New VayuSphere Block Attention Path
+            use_triton = (self.config.attention_impl == "vayusphere_block_triton_eval") and not self.training
+
+            attn_out, v_diag = self.attention(
+                hidden_states=normed_hidden_states,
+                cos=cos,
+                sin=sin,
+                attention_mask=attention_mask,
+                use_triton=use_triton,
+                return_stats=return_diagnostics
+            )
+            diagnostics.update(v_diag)
+
+            # For memory path compatibility, we need q, k, v (raw)
+            # but VayuSphereBlockAttention doesn't easily expose them without extra compute.
+            # AKASHA memory is usually for dense attention.
+            # We skip AKASHA for block attention in v0.1 or provide dummy.
+            q, k, v = None, None, None
+
+            hidden_states = hidden_states + attn_out
+
+        elif self.config.attention_type == "sdpa":
             # Optimized SDPA path with VayuSphere support
             if self.config.vayusphere_apply_stage == "pre_rope":
                 batch_size, seq_len, _ = normed_hidden_states.shape
@@ -130,26 +155,35 @@ class DecoderBlock(nn.Module):
             )
             
         # AKASHA Memory path
-        mixed_attn_out = self.memory(
-            hidden_states=normed_hidden_states,
-            local_attn_out=local_attn_out,
-            q=q,
-            k=k,
-            v=v,
-            attention_module=self.attention
-        )
-        
-        # Format shapes and project back
-        batch_size, n_heads, seq_len, head_dim = mixed_attn_out.shape
-        attn_out = mixed_attn_out.transpose(1, 2).contiguous().view(batch_size, seq_len, self.config.d_model)
-        attn_out = self.attention.o_proj(attn_out)
-        attn_out = self.attention.resid_dropout(attn_out)
+        if q is not None:
+            mixed_attn_out = self.memory(
+                hidden_states=normed_hidden_states,
+                local_attn_out=local_attn_out,
+                q=q,
+                k=k,
+                v=v,
+                attention_module=self.attention
+            )
+
+            # Format shapes and project back
+            batch_size, n_heads, seq_len, head_dim = mixed_attn_out.shape
+            attn_out = mixed_attn_out.transpose(1, 2).contiguous().view(batch_size, seq_len, self.config.d_model)
+            attn_out = self.attention.o_proj(attn_out)
+            attn_out = self.attention.resid_dropout(attn_out)
+        else:
+            # Block attention already added itself to hidden_states and handled projections
+            attn_out = None
         
         # Optional spectral mixing path
         if self.config.use_surya:
-            attn_out = attn_out + self.surya(normed_hidden_states)
+            surya_out = self.surya(normed_hidden_states)
+            if attn_out is not None:
+                attn_out = attn_out + surya_out
+            else:
+                hidden_states = hidden_states + surya_out
             
-        hidden_states = hidden_states + attn_out
+        if attn_out is not None:
+            hidden_states = hidden_states + attn_out
 
         # Optional phase/magnitude gate modulation
         if self.config.use_indra_phase:

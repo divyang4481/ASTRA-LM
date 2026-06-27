@@ -20,6 +20,7 @@ class ModelConfig:
 
     # Attention Parameters
     attention_type: str = "sdpa" # "sdpa", "gqa" (legacy), or "chakra_legacy"
+    attention_impl: str = "sdpa" # "sdpa", "vayusphere_block", "vayusphere_block_triton_eval"
     use_flash_attention: bool = True
     local_window: int = 128
     sphere_buckets: int = 32
@@ -45,6 +46,20 @@ class ModelConfig:
     vayusphere_diagnostics_every_n_steps: int = 1
     vayusphere_enable_heavy_diagnostics: bool = True
 
+    # VayuSphere Block Attention Parameters
+    vayu_block_size: int = 64
+    vayu_top_m_blocks: int = 2
+    vayu_force_local_blocks: bool = True
+    vayu_route_policy: str = "current_prev_semantic" # "semantic_only", "current_prev_semantic", "current_prev_only"
+    vayu_pair_scorer: str = "linear" # "cosine", "linear", "mlp", "rbfkan"
+    vayu_delta_scale_init: float = 1e-3
+    vayu_temperature_init: float = 1.0
+    vayu_rbf_centers: int = 8
+    vayu_rbf_gamma: float = 8.0
+    vayu_mlp_hidden: int = 16
+    vayu_use_triton_eval: bool = True
+    vayu_triton_min_seq_len: int = 512
+    vayu_log_route_stats: bool = True
 
     # Attention Modulation
     use_learned_attention_temp: bool = False

@@ -28,6 +28,9 @@ def main():
     parser.add_argument("--batch_size", type=int, help="Override per_device_train_batch_size")
     parser.add_argument("--seq_len", type=int, help="Override max_seq_len for KD")
     parser.add_argument("--grad_accum", type=int, help="Override gradient_accumulation_steps")
+    parser.add_argument("--teacher_device", type=str, default="auto", choices=["auto", "cuda", "cpu"], help="Device for teacher model")
+    parser.add_argument("--topk_logits", type=int, default=100, help="Top-k logits for KD compression")
+    parser.add_argument("--model_config", type=str, help="Alias for --student_config")
     
     args = parser.parse_args()
 
@@ -42,8 +45,12 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     # Load configs
-    logger.info(f"Loading student config from {args.student_config}")
-    s_m_cfg = load_config_from_yaml(ModelConfig, args.student_config)
+    student_config_path = args.student_config or args.model_config
+    if not student_config_path:
+        raise ValueError("--student_config or --model_config is required.")
+
+    logger.info(f"Loading student config from {student_config_path}")
+    s_m_cfg = load_config_from_yaml(ModelConfig, student_config_path)
     
     logger.info(f"Loading train config from {args.train_config}")
     t_cfg = load_config_from_yaml(TrainConfig, args.train_config)
@@ -81,7 +88,7 @@ def main():
     teacher_model = load_teacher_model(
         config_path=args.teacher_config,
         checkpoint_path=args.teacher_checkpoint,
-        device=device,
+        device=args.teacher_device,
         dtype=args.teacher_dtype
     )
 
@@ -154,7 +161,8 @@ def main():
         eval_dataloader=eval_dataloader,
         alpha=args.alpha,
         temperature=args.temperature,
-        device=device
+        device=device,
+        topk_logits=args.topk_logits
     )
 
     # Start training
